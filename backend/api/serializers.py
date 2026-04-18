@@ -1,21 +1,93 @@
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
+
 from .models import (
     AcademicDetails,
-    Attendance,
     Certificate,
     Event,
     FeesDetails,
-    Marks,
     Notice,
     ParentDetails,
     Student,
+    UserProfile,
 )
+
+User = get_user_model()
 
 
 class StudentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Student
         fields = '__all__'
+
+
+class StudentLimitedSerializer(serializers.ModelSerializer):
+    """Subject teachers: minimal student fields."""
+
+    class Meta:
+        model = Student
+        fields = ['id', 'name', 'student_class', 'roll_no', 'division']
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    assigned_subject_name = serializers.CharField(source='assigned_subject.name', read_only=True)
+
+    class Meta:
+        model = UserProfile
+        fields = ['role', 'assigned_class', 'assigned_subject', 'assigned_subject_name']
+
+
+class MeSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    role = serializers.CharField(read_only=True)
+    assigned_class = serializers.CharField(read_only=True)
+    assigned_subject_id = serializers.IntegerField(allow_null=True, read_only=True)
+    assigned_subject_name = serializers.CharField(allow_null=True, read_only=True)
+    rbac_label = serializers.CharField(read_only=True)
+
+
+class CreateTeacherSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(min_length=8, write_only=True)
+    name = serializers.CharField(max_length=150)
+    role = serializers.ChoiceField(choices=UserProfile.Role.choices)
+    assigned_class = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    assigned_subject = serializers.PrimaryKeyRelatedField(
+        queryset=__import__('marks.models', fromlist=['Subject']).Subject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def validate(self, attrs):
+        role = attrs['role']
+        if role in (UserProfile.Role.CLASS_TEACHER,) and not (attrs.get('assigned_class') or '').strip():
+            raise serializers.ValidationError({'assigned_class': 'Required for class teacher.'})
+        if role == UserProfile.Role.SUBJECT_TEACHER and not attrs.get('assigned_subject'):
+            raise serializers.ValidationError({'assigned_subject': 'Required for subject teacher.'})
+        return attrs
+
+    def create(self, validated_data):
+        email = validated_data['email'].strip().lower()
+        if User.objects.filter(username=email).exists():
+            raise serializers.ValidationError({'email': 'A user with this email already exists.'})
+        u = User.objects.create_user(
+            username=email,
+            email=email,
+            password=validated_data['password'],
+            first_name=validated_data['name'][:150],
+        )
+        subj = validated_data.get('assigned_subject')
+        profile, _ = UserProfile.objects.update_or_create(
+            user=u,
+            defaults={
+                'role': validated_data['role'],
+                'assigned_class': (validated_data.get('assigned_class') or '').strip(),
+                'assigned_subject': subj,
+            },
+        )
+        return u
 
 
 class ParentDetailsSerializer(serializers.ModelSerializer):
@@ -36,8 +108,6 @@ class AcademicDetailsSerializer(serializers.ModelSerializer):
             'attendance_percentage',
             'overall_result',
             'semester',
-            'unit_test_marks',
-            'surprise_test_marks',
             'performance',
             'creativity',
             'teacher_remarks',
@@ -81,6 +151,8 @@ class StudentDetailSerializer(serializers.ModelSerializer):
             'id',
             'name',
             'email',
+            'parent_email',
+            'parent_phone',
             'student_class',
             'roll_no',
             'photo',
@@ -125,82 +197,6 @@ class StudentDetailSerializer(serializers.ModelSerializer):
             FeesDetails.objects.update_or_create(student=instance, defaults=fees_data)
 
         return instance
-
-
-class AttendanceSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source='student.name', read_only=True)
-    marked_by_name = serializers.SerializerMethodField(read_only=True)
-
-    class Meta:
-        model = Attendance
-        fields = [
-            'id',
-            'student',
-            'student_name',
-            'date',
-            'status',
-            'leave_reason',
-            'marked_by',
-            'marked_by_name',
-            'created_at',
-        ]
-        read_only_fields = ['marked_by', 'marked_by_name', 'created_at']
-
-    def get_marked_by_name(self, obj):
-        u = obj.marked_by
-        if not u:
-            return ''
-        full = (u.get_full_name() or '').strip()
-        if full:
-            return full
-        return u.username or u.email or ''
-
-    def validate(self, attrs):
-        attrs = super().validate(attrs)
-        instance = getattr(self, 'instance', None)
-        status_val = attrs.get('status', getattr(instance, 'status', None) if instance else None)
-        lr = attrs.get('leave_reason', None)
-        if instance is not None and lr is None:
-            lr = instance.leave_reason
-        elif instance is None and lr is None:
-            lr = ''
-        if status_val == Attendance.Status.LEAVE and not (lr or '').strip():
-            raise serializers.ValidationError(
-                {'leave_reason': 'Leave reason is required when status is Leave.'}
-            )
-
-        student = attrs.get('student', getattr(instance, 'student', None) if instance else None)
-        date_val = attrs.get('date', getattr(instance, 'date', None) if instance else None)
-        if student and date_val:
-            qs = Attendance.objects.filter(student=student, date=date_val)
-            if instance is not None:
-                qs = qs.exclude(pk=instance.pk)
-            if qs.exists():
-                raise serializers.ValidationError(
-                    {'detail': 'Attendance for this student on this date already exists.'}
-                )
-        return attrs
-
-    def create(self, validated_data):
-        validated_data['marked_by'] = self.context['request'].user
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        validated_data['marked_by'] = self.context['request'].user
-        return super().update(instance, validated_data)
-
-
-class MarksSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source='student.name', read_only=True)
-
-    class Meta:
-        model = Marks
-        fields = ['id', 'student', 'student_name', 'subject', 'marks']
-
-    def validate_marks(self, value):
-        if value < 0 or value > 100:
-            raise serializers.ValidationError('Marks must be between 0 and 100.')
-        return value
 
 
 class NoticeSerializer(serializers.ModelSerializer):

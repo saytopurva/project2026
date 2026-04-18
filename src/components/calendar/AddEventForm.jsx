@@ -5,6 +5,7 @@ import { Button } from '../Button'
 import { Card } from '../Card'
 import { FormMessage } from '../FormMessage'
 import { InputField } from '../InputField'
+import { formatApiError } from '../../utils/formatApiError'
 import { createEvent } from '../../services/eventService'
 import { EVENT_TYPES, getEventTypeMeta } from './eventTypeMeta'
 
@@ -48,12 +49,7 @@ export function AddEventForm({ defaultDate, onCreated }) {
       setMessage({ type: 'success', text: 'Event added to calendar.' })
       onCreated?.(created)
     } catch (e2) {
-      const detail =
-        e2?.response?.data?.detail ||
-        (typeof e2?.response?.data === 'object' && JSON.stringify(e2.response.data)) ||
-        e2?.message ||
-        'Could not create event.'
-      setMessage({ type: 'error', text: String(detail) })
+      setMessage({ type: 'error', text: formatApiError(e2) || 'Could not create event.' })
     } finally {
       setSubmitting(false)
     }

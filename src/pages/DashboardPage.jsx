@@ -2,34 +2,39 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AttendanceSnapshot } from '../components/dashboard/AttendanceSnapshot'
 import { DashboardCharts } from '../components/dashboard/DashboardCharts'
-import { DashboardSearchBar } from '../components/dashboard/DashboardSearchBar'
+import { DashboardInsightsStrip } from '../components/dashboard/DashboardInsightsStrip'
+import { DashboardPageSkeleton } from '../components/dashboard/DashboardPageSkeleton'
 import { DashboardStatCard } from '../components/dashboard/DashboardStatCard'
 import {
+  IconAlertAttendance,
   IconAttendance,
-  IconClasses,
-  IconMarks,
+  IconTrophy,
   IconUsers,
 } from '../components/dashboard/icons'
-import { QuickActionsPanel } from '../components/dashboard/QuickActionsPanel'
+import { QuickActionsBar } from '../components/dashboard/QuickActionsBar'
 import { RecentActivityPanel } from '../components/dashboard/RecentActivityPanel'
 import { Card } from '../components/Card'
-import { Loader } from '../components/Loader'
 import { notify } from '../utils/notify'
+import { formatApiError } from '../utils/formatApiError'
 import { useAuth } from '../hooks/useAuth'
 import { DashboardLayout } from '../layouts/DashboardLayout'
+import { rbacNavFlags } from '../utils/rbac'
 import { fetchDashboardOverview } from '../services/dashboardService'
+import { fetchSubjectPerformance } from '../services/subjectPerformanceService'
 
 /**
- * Full SMS admin dashboard: KPIs, Recharts, activity, quick actions, search.
+ * Premium SMS admin dashboard: KPIs, analytics grid, notices/events, insights, activity.
  */
 export function DashboardPage() {
   const { user, logout } = useAuth()
+  const nav = useMemo(() => rbacNavFlags(user?.rbac), [user?.rbac])
   const navigate = useNavigate()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [classFilter, setClassFilter] = useState('all')
+  const [insight, setInsight] = useState({ bestSubject: null, weakSubject: null })
 
   useEffect(() => {
     let cancelled = false
@@ -40,11 +45,7 @@ export function DashboardPage() {
         const overview = await fetchDashboardOverview()
         if (!cancelled) setData(overview)
       } catch (e) {
-        const msg =
-          e?.response?.data?.detail ||
-          e?.response?.data?.message ||
-          e?.message ||
-          'Could not load dashboard.'
+        const msg = formatApiError(e) || 'Could not load dashboard.'
         if (!cancelled) {
           setLoadError(msg)
           if (!silent) notify.error(msg)
@@ -63,6 +64,33 @@ export function DashboardPage() {
       window.removeEventListener('focus', onFocus)
     }
   }, [])
+
+  useEffect(() => {
+    if (!data?.students?.length) {
+      setInsight({ bestSubject: null, weakSubject: null })
+      return
+    }
+    const classes = [
+      ...new Set(data.students.map((s) => s.className).filter(Boolean)),
+    ].sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }))
+    const cn = classes[0]
+    if (!cn) return
+    let cancelled = false
+    fetchSubjectPerformance({ class_name: String(cn), exam_type: 'UNIT_TEST' })
+      .then((r) => {
+        if (cancelled) return
+        setInsight({
+          bestSubject: r?.summary?.best_subject ?? null,
+          weakSubject: r?.summary?.weakest_subject ?? null,
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setInsight({ bestSubject: null, weakSubject: null })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [data?.students])
 
   const classOptions = useMemo(() => {
     if (!data?.students?.length) return [{ value: 'all', label: 'All classes' }]
@@ -103,26 +131,71 @@ export function DashboardPage() {
     navigate('/students/add')
   }, [navigate])
   const onMarkAttendance = useCallback(() => {
-    navigate('/attendance', { state: { focus: 'mark-attendance' } })
+    navigate('/attendance/class')
   }, [navigate])
   const onAddMarks = useCallback(() => {
     navigate('/marks', { state: { focus: 'add-marks' } })
   }, [navigate])
 
+  const lowAttendanceTotal =
+    data?.todayAttendance != null
+      ? (data.todayAttendance.absent ?? 0) + (data.todayAttendance.leave ?? 0)
+      : 0
+
+  const headerSearch = useMemo(
+    () => ({
+      value: searchQuery,
+      onChange: setSearchQuery,
+      placeholder: 'Search students…',
+    }),
+    [searchQuery],
+  )
+
   return (
-    <DashboardLayout user={user} title="Dashboard" onLogout={handleLogout}>
-      <div className="mx-auto max-w-[1400px] space-y-6">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-slate-100">
-            Welcome back, {user?.name || 'Admin'}
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-600 sm:text-base dark:text-slate-400">
-            Monitor students, attendance, and performance at a glance.
-          </p>
+    <DashboardLayout
+      user={user}
+      title="Dashboard"
+      onLogout={handleLogout}
+      headerSearch={headerSearch}
+    >
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+              Welcome back, {user?.name || 'Admin'}
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              {user?.rbac?.rbac_label || 'School operations overview'}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                Class
+              </label>
+              <select
+                value={classFilter}
+                onChange={(e) => setClassFilter(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-800 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                aria-label="Filter by class"
+              >
+                {classOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <QuickActionsBar
+            onMarkAttendance={onMarkAttendance}
+            onAddStudent={onAddStudent}
+            onAddMarks={onAddMarks}
+            showAttendance={nav.showAttendance}
+            showAddStudent={nav.showAddStudent}
+          />
         </div>
 
         {loading ? (
-          <Loader label="Loading dashboard…" className="py-20" />
+          <DashboardPageSkeleton />
         ) : loadError ? (
           <Card accentClass="from-red-500 to-rose-600">
             <p className="text-sm font-medium text-red-800 dark:text-red-300">{loadError}</p>
@@ -130,33 +203,25 @@ export function DashboardPage() {
           </Card>
         ) : (
           <>
-            <DashboardSearchBar
-              query={searchQuery}
-              onQueryChange={setSearchQuery}
-              classFilter={classFilter}
-              onClassFilterChange={setClassFilter}
-              classOptions={classOptions}
-              resultCount={filteredStudents.length}
-            />
-
             {searchQuery.trim() || classFilter !== 'all' ? (
-              <Card className="transition-opacity duration-300">
-                <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Matching students
-                </h4>
-                <ul className="mt-3 divide-y divide-slate-100 dark:divide-slate-700">
+              <Card compact className="border-slate-200/90 transition-opacity duration-300 dark:border-slate-800">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold text-slate-900 dark:text-slate-100">Matching students</h4>
+                  <span className="text-[10px] text-slate-500">{filteredStudents.length} found</span>
+                </div>
+                <ul className="mt-2 divide-y divide-slate-100 dark:divide-slate-700">
                   {filteredStudents.length === 0 ? (
-                    <li className="py-6 text-center text-sm text-slate-500 dark:text-slate-400">
+                    <li className="py-4 text-center text-xs text-slate-500 dark:text-slate-400">
                       No students match your filters.
                     </li>
                   ) : (
-                    filteredStudents.slice(0, 8).map((s) => (
+                    filteredStudents.slice(0, 10).map((s) => (
                       <li
                         key={s.id}
-                        className="flex items-center justify-between py-2.5 text-sm transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                        className="flex items-center justify-between py-2 text-xs transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50"
                       >
                         <span className="font-medium text-slate-800 dark:text-slate-200">{s.name}</span>
-                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">
                           Class {s.className}-{s.section}
                         </span>
                       </li>
@@ -166,73 +231,88 @@ export function DashboardPage() {
               </Card>
             ) : null}
 
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div
+              className={`grid gap-3 sm:grid-cols-2 ${
+                nav.showAttendance ? 'xl:grid-cols-4' : 'xl:grid-cols-2'
+              }`}
+            >
               <DashboardStatCard
                 title="Total students"
                 value={data.totalStudents.toLocaleString()}
-                subtitle="Active enrollments"
+                subtitle="Enrolled"
                 icon={IconUsers}
                 accent={{
-                  iconBg: 'bg-gradient-to-br from-violet-500 to-indigo-500',
+                  iconBg: 'bg-gradient-to-br from-violet-500 to-indigo-600',
                   blob: 'bg-violet-400',
                 }}
               />
+              {nav.showAttendance ? (
+                <DashboardStatCard
+                  title="Avg attendance"
+                  value={`${data.attendancePercent}%`}
+                  subtitle="Last 30 days"
+                  icon={IconAttendance}
+                  accent={{
+                    iconBg: 'bg-gradient-to-br from-emerald-500 to-teal-600',
+                    blob: 'bg-emerald-400',
+                  }}
+                />
+              ) : null}
               <DashboardStatCard
-                title="Attendance"
-                value={`${data.attendancePercent}%`}
-                subtitle="Monthly average"
-                icon={IconAttendance}
+                title="Best subject"
+                value={insight.bestSubject || '—'}
+                subtitle="Unit test · 1st class"
+                icon={IconTrophy}
                 accent={{
-                  iconBg: 'bg-gradient-to-br from-emerald-500 to-teal-500',
-                  blob: 'bg-emerald-400',
-                }}
-              />
-              <DashboardStatCard
-                title="Average marks"
-                value={`${data.averageMarks}%`}
-                subtitle="Across assessments"
-                icon={IconMarks}
-                accent={{
-                  iconBg: 'bg-gradient-to-br from-amber-400 to-orange-400',
+                  iconBg: 'bg-gradient-to-br from-amber-400 to-orange-500',
                   blob: 'bg-amber-300',
                 }}
               />
-              <DashboardStatCard
-                title="Total classes"
-                value={data.totalClasses}
-                subtitle="Sections in session"
-                icon={IconClasses}
-                accent={{
-                  iconBg: 'bg-gradient-to-br from-sky-500 to-blue-500',
-                  blob: 'bg-sky-400',
-                }}
-              />
+              {nav.showAttendance ? (
+                <DashboardStatCard
+                  title="Attendance alerts"
+                  value={String(lowAttendanceTotal)}
+                  subtitle="Absent + leave today"
+                  icon={IconAlertAttendance}
+                  accent={{
+                    iconBg: 'bg-gradient-to-br from-rose-500 to-red-600',
+                    blob: 'bg-rose-400',
+                    valueClass:
+                      lowAttendanceTotal > 0
+                        ? 'text-rose-600 dark:text-rose-400'
+                        : 'text-slate-900 dark:text-slate-100',
+                  }}
+                />
+              ) : null}
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-12">
-              <div className="space-y-6 xl:col-span-8">
-                <DashboardCharts
-                  attendanceTrend={data.attendanceTrend}
-                  marksDistribution={data.marksDistribution}
-                  subjectPerformance={data.subjectPerformance}
-                />
+            <DashboardInsightsStrip
+              weakSubject={insight.weakSubject}
+              lowAttendanceCount={lowAttendanceTotal}
+              onNavigateMarks={() => navigate('/marks')}
+              onNavigateAttendance={() => navigate('/attendance/class')}
+              includeAttendance={nav.showAttendance}
+            />
+
+            <div className="grid gap-4 xl:grid-cols-12">
+              <div className="xl:col-span-12">
+                <DashboardCharts />
               </div>
-              <div className="space-y-6 xl:col-span-4">
-                <QuickActionsPanel
-                  onAddStudent={onAddStudent}
-                  onMarkAttendance={onMarkAttendance}
-                  onAddMarks={onAddMarks}
-                />
+            </div>
+
+            <div
+              className={`grid gap-4 ${nav.showAttendance ? 'lg:grid-cols-2' : ''}`}
+            >
+              {nav.showAttendance ? (
                 <AttendanceSnapshot
                   present={data.todayAttendance.present}
                   absent={data.todayAttendance.absent}
                   leave={data.todayAttendance.leave ?? 0}
                   dateLabel={todayLabel}
                 />
-              </div>
+              ) : null}
+              <RecentActivityPanel items={data.recentActivity} />
             </div>
-
-            <RecentActivityPanel items={data.recentActivity} />
           </>
         )}
       </div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useLocation, useSearchParams } from 'react-router-dom'
 import {
+  Award,
   BadgeCheck,
   BookOpenCheck,
   CalendarDays,
@@ -17,7 +18,8 @@ import {
   ClipboardList,
 } from 'lucide-react'
 import { Card } from '../components/Card'
-import { StudentAttendanceSection } from '../components/students/StudentAttendanceSection'
+import { StudentAttendancePanel } from '../components/attendance/StudentAttendancePanel'
+import { StudentResultsSection } from '../components/students/StudentResultsSection'
 import { Button } from '../components/Button'
 import { Loader } from '../components/Loader'
 import { InputField } from '../components/InputField'
@@ -90,6 +92,8 @@ export function StudentProfilePage() {
   const { id } = useParams()
   const studentId = id ? String(id) : ''
   const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
   const { user, logout } = useAuth()
 
   const [loading, setLoading] = useState(true)
@@ -99,12 +103,11 @@ export function StudentProfilePage() {
   const [editMode, setEditMode] = useState(false)
   const [saving, setSaving] = useState(false)
   const [photoFile, setPhotoFile] = useState(null)
-  const [unitJsonText, setUnitJsonText] = useState('{\n}')
-  const [surpriseJsonText, setSurpriseJsonText] = useState('{\n}')
-  const [jsonError, setJsonError] = useState('')
   const [form, setForm] = useState({
     name: '',
     email: '',
+    parent_email: '',
+    parent_phone: '',
     student_class: '',
     roll_no: '',
     division: '',
@@ -124,8 +127,6 @@ export function StudentProfilePage() {
       attendance_percentage: '',
       overall_result: '',
       semester: '',
-      unit_test_marks: {},
-      surprise_test_marks: {},
       performance: '',
       creativity: '',
       teacher_remarks: '',
@@ -153,6 +154,8 @@ export function StudentProfilePage() {
       setForm({
         name: data?.name || '',
         email: data?.email || '',
+        parent_email: data?.parent_email || '',
+        parent_phone: data?.parent_phone || '',
         student_class: data?.student_class || '',
         roll_no: data?.roll_no ?? '',
         division: data?.division || '',
@@ -172,8 +175,6 @@ export function StudentProfilePage() {
           attendance_percentage: data?.academic?.attendance_percentage ?? '',
           overall_result: data?.academic?.overall_result || '',
           semester: data?.academic?.semester || '',
-          unit_test_marks: data?.academic?.unit_test_marks || {},
-          surprise_test_marks: data?.academic?.surprise_test_marks || {},
           performance: data?.academic?.performance || '',
           creativity: data?.academic?.creativity || '',
           teacher_remarks: data?.academic?.teacher_remarks || '',
@@ -185,9 +186,6 @@ export function StudentProfilePage() {
         },
       })
       setPhotoFile(null)
-      setUnitJsonText(JSON.stringify(data?.academic?.unit_test_marks || {}, null, 2))
-      setSurpriseJsonText(JSON.stringify(data?.academic?.surprise_test_marks || {}, null, 2))
-      setJsonError('')
     } catch (e) {
       const msg = e?.response?.data?.detail || e?.message || 'Could not load student profile.'
       setLoadError(msg)
@@ -201,6 +199,19 @@ export function StudentProfilePage() {
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    const q = (searchParams.get('tab') || '').toLowerCase()
+    if (q === 'results') {
+      setTab('results')
+    }
+  }, [searchParams])
+
+  useEffect(() => {
+    if (location.state?.tab === 'results') {
+      setTab('results')
+    }
+  }, [location.state])
 
   const onLogout = async () => {
     await logout()
@@ -221,20 +232,20 @@ export function StudentProfilePage() {
 
   const startEdit = () => {
     setEditMode(true)
-    setJsonError('')
     notify.info('Edit mode enabled.')
   }
 
   const cancelEdit = () => {
     setEditMode(false)
     setPhotoFile(null)
-    setJsonError('')
     // Reset draft to current student snapshot
     if (student) {
       setForm((f) => ({
         ...f,
         name: student?.name || '',
         email: student?.email || '',
+        parent_email: student?.parent_email || '',
+        parent_phone: student?.parent_phone || '',
         student_class: student?.student_class || '',
         roll_no: student?.roll_no ?? '',
         division: student?.division || '',
@@ -254,8 +265,6 @@ export function StudentProfilePage() {
           attendance_percentage: student?.academic?.attendance_percentage ?? '',
           overall_result: student?.academic?.overall_result || '',
           semester: student?.academic?.semester || '',
-          unit_test_marks: student?.academic?.unit_test_marks || {},
-          surprise_test_marks: student?.academic?.surprise_test_marks || {},
           performance: student?.academic?.performance || '',
           creativity: student?.academic?.creativity || '',
           teacher_remarks: student?.academic?.teacher_remarks || '',
@@ -267,35 +276,17 @@ export function StudentProfilePage() {
         },
       }))
     }
-    setUnitJsonText(JSON.stringify(student?.academic?.unit_test_marks || {}, null, 2))
-    setSurpriseJsonText(JSON.stringify(student?.academic?.surprise_test_marks || {}, null, 2))
   }
 
   const saveEdit = async () => {
     if (!studentId) return
     setSaving(true)
     try {
-      setJsonError('')
-      let parsedUnit = form.academic.unit_test_marks || {}
-      let parsedSurprise = form.academic.surprise_test_marks || {}
-      try {
-        parsedUnit = JSON.parse(unitJsonText || '{}')
-      } catch {
-        setJsonError('Unit tests JSON is invalid. Please fix it before saving.')
-        setSaving(false)
-        return
-      }
-      try {
-        parsedSurprise = JSON.parse(surpriseJsonText || '{}')
-      } catch {
-        setJsonError('Surprise tests JSON is invalid. Please fix it before saving.')
-        setSaving(false)
-        return
-      }
-
       const payload = {
         name: form.name,
         email: form.email,
+        parent_email: form.parent_email,
+        parent_phone: form.parent_phone,
         student_class: form.student_class,
         roll_no: form.roll_no === '' ? null : Number(form.roll_no),
         division: form.division,
@@ -312,8 +303,6 @@ export function StudentProfilePage() {
             form.academic.attendance_percentage === ''
               ? null
               : Number(form.academic.attendance_percentage),
-          unit_test_marks: parsedUnit,
-          surprise_test_marks: parsedSurprise,
         },
         fees: {
           ...form.fees,
@@ -327,8 +316,6 @@ export function StudentProfilePage() {
       setStudent(updated)
       setEditMode(false)
       setPhotoFile(null)
-      setUnitJsonText(JSON.stringify(updated?.academic?.unit_test_marks || {}, null, 2))
-      setSurpriseJsonText(JSON.stringify(updated?.academic?.surprise_test_marks || {}, null, 2))
       notify.success('Student profile updated.')
     } catch (e) {
       const msg =
@@ -513,6 +500,25 @@ export function StudentProfilePage() {
                             onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
                           />
                         </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <InputField
+                            id="sp-parent-email"
+                            label="Parent email (reports)"
+                            type="email"
+                            value={form.parent_email}
+                            onChange={(e) =>
+                              setForm((f) => ({ ...f, parent_email: e.target.value }))
+                            }
+                          />
+                          <InputField
+                            id="sp-parent-phone"
+                            label="Parent phone"
+                            value={form.parent_phone}
+                            onChange={(e) =>
+                              setForm((f) => ({ ...f, parent_phone: e.target.value }))
+                            }
+                          />
+                        </div>
                       </div>
                     ) : null}
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -575,6 +581,12 @@ export function StudentProfilePage() {
                 label="Academics"
               />
               <TabButton
+                active={tab === 'results'}
+                onClick={() => setTab('results')}
+                icon={Award}
+                label="Results"
+              />
+              <TabButton
                 active={tab === 'fees'}
                 onClick={() => setTab('fees')}
                 icon={Wallet}
@@ -595,8 +607,10 @@ export function StudentProfilePage() {
             </div>
 
             {tab === 'attendance' ? (
-              <StudentAttendanceSection studentId={studentId} />
+              <StudentAttendancePanel studentId={studentId} />
             ) : null}
+
+            {tab === 'results' ? <StudentResultsSection studentId={studentId} /> : null}
 
             {tab === 'overview' ? (
               <div className="grid gap-6 lg:grid-cols-3">
@@ -950,77 +964,6 @@ export function StudentProfilePage() {
                       </div>
                     ) : null}
                   </div>
-                </Card>
-
-                <Card className="border-slate-100 shadow-md shadow-slate-200/40 dark:border-slate-800 dark:shadow-slate-950/30 lg:col-span-2">
-                  <div className="flex items-center gap-2">
-                    <BookOpenCheck className="h-4 w-4 text-sky-600 dark:text-sky-400" aria-hidden />
-                    <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                      Test marks
-                    </h3>
-                  </div>
-                  <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                    Unit and surprise test marks (saved as JSON).
-                  </p>
-
-                  <div className="mt-4 grid gap-4 md:grid-cols-2">
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        Unit tests
-                      </p>
-                      <pre className="mt-2 overflow-auto rounded-xl bg-slate-50 p-3 text-xs text-slate-700 ring-1 ring-slate-200/70 dark:bg-slate-950/40 dark:text-slate-200 dark:ring-slate-800">
-                        {JSON.stringify(
-                          (editMode ? form.academic.unit_test_marks : student.academic?.unit_test_marks) || {},
-                          null,
-                          2
-                        )}
-                      </pre>
-                      {editMode ? (
-                        <div className="mt-3 w-full text-left">
-                          <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                            Edit JSON
-                          </label>
-                          <textarea
-                            value={unitJsonText}
-                            onChange={(e) => setUnitJsonText(e.target.value)}
-                            rows={6}
-                            className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 font-mono text-xs text-slate-900 shadow-inner shadow-white/50 transition focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-100 dark:shadow-slate-950/40 dark:focus:border-sky-500 dark:focus:bg-slate-900 dark:focus:ring-sky-900/40"
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        Surprise tests
-                      </p>
-                      <pre className="mt-2 overflow-auto rounded-xl bg-slate-50 p-3 text-xs text-slate-700 ring-1 ring-slate-200/70 dark:bg-slate-950/40 dark:text-slate-200 dark:ring-slate-800">
-                        {JSON.stringify(
-                          (editMode ? form.academic.surprise_test_marks : student.academic?.surprise_test_marks) || {},
-                          null,
-                          2
-                        )}
-                      </pre>
-                      {editMode ? (
-                        <div className="mt-3 w-full text-left">
-                          <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                            Edit JSON
-                          </label>
-                          <textarea
-                            value={surpriseJsonText}
-                            onChange={(e) => setSurpriseJsonText(e.target.value)}
-                            rows={6}
-                            className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 font-mono text-xs text-slate-900 shadow-inner shadow-white/50 transition focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-100 dark:shadow-slate-950/40 dark:focus:border-sky-500 dark:focus:bg-slate-900 dark:focus:ring-sky-900/40"
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {editMode && jsonError ? (
-                    <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50/70 p-4 text-sm font-semibold text-rose-900 dark:border-rose-900/50 dark:bg-rose-950/20 dark:text-rose-200">
-                      {jsonError}
-                    </div>
-                  ) : null}
                 </Card>
               </div>
             ) : null}

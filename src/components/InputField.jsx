@@ -11,6 +11,12 @@ export function InputField({
   autoComplete,
   disabled,
   placeholder,
+  step,
+  min,
+  max,
+  inputMode,
+  name,
+  ...rest
 }) {
   return (
     <div className="w-full text-left">
@@ -23,6 +29,7 @@ export function InputField({
         </label>
       ) : null}
       <input
+        {...rest}
         id={id}
         type={type}
         value={value}
@@ -30,6 +37,11 @@ export function InputField({
         autoComplete={autoComplete}
         disabled={disabled}
         placeholder={placeholder}
+        step={step}
+        min={min}
+        max={max}
+        inputMode={inputMode}
+        name={name}
         className="w-full rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 text-sm text-slate-900 shadow-inner shadow-white/50 transition placeholder:text-slate-400 focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-100 dark:shadow-slate-950/40 dark:placeholder:text-slate-500 dark:focus:border-sky-500 dark:focus:bg-slate-900 dark:focus:ring-sky-900/40"
         aria-invalid={Boolean(error)}
         aria-describedby={error ? `${id}-err` : undefined}

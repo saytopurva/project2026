@@ -5,6 +5,7 @@ import { ThemeSegmented } from '../components/ThemeSegmented'
 import { notify } from '../utils/notify'
 import { useAuth } from '../hooks/useAuth'
 import { DashboardLayout } from '../layouts/DashboardLayout'
+import { rbacNavFlags } from '../utils/rbac'
 
 function settingsIconSlot(Icon, color) {
   return (
@@ -40,6 +41,7 @@ const links = [
  */
 export function SettingsPage() {
   const { user, logout } = useAuth()
+  const nav = rbacNavFlags(user?.rbac)
   const navigate = useNavigate()
 
   const handleLogout = async () => {
@@ -65,7 +67,9 @@ export function SettingsPage() {
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          {links.map(({ to, title, desc, icon, color }) => (
+          {links
+            .filter((l) => (l.to === '/attendance' ? nav.showAttendance : true))
+            .map(({ to, title, desc, icon, color }) => (
             <button
               key={to}
               type="button"

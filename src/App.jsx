@@ -11,9 +11,13 @@ import { AddStudentPage } from './pages/AddStudentPage'
 import { StudentProfilePage } from './pages/StudentProfilePage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AttendancePage } from './pages/AttendancePage'
+import { ClassAttendancePage } from './pages/ClassAttendancePage'
 import { MarksPage } from './pages/MarksPage'
+import { ResultsPage } from './pages/ResultsPage'
+import { AttendanceReportPage } from './pages/AttendanceReportPage'
 import { NoticeBoardPage } from './pages/NoticeBoardPage'
 import { CalendarPage } from './pages/CalendarPage'
+import { AnalyticsPage } from './pages/AnalyticsPage'
 
 function AppRoutes() {
   return (
@@ -69,10 +73,34 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/attendance/class"
+        element={
+          <ProtectedRoute>
+            <ClassAttendancePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/marks"
         element={
           <ProtectedRoute>
             <MarksPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/results"
+        element={
+          <ProtectedRoute>
+            <ResultsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/attendance-report"
+        element={
+          <ProtectedRoute>
+            <AttendanceReportPage />
           </ProtectedRoute>
         }
       />
@@ -89,6 +117,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <CalendarPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/analytics"
+        element={
+          <ProtectedRoute>
+            <AnalyticsPage />
           </ProtectedRoute>
         }
       />

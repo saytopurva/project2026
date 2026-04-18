@@ -1,39 +1,61 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { Plus } from 'lucide-react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
-import { InputField } from '../components/InputField'
+import { ExamTabs } from '../components/marks/ExamTabs'
+import { EditMarksModal } from '../components/marks/EditMarksModal'
+import { MarksChart } from '../components/marks/MarksChart'
+import { MarksTable } from '../components/marks/MarksTable'
 import { Loader } from '../components/Loader'
 import { notify } from '../utils/notify'
 import { useAuth } from '../hooks/useAuth'
 import { DashboardLayout } from '../layouts/DashboardLayout'
-import { createMark, fetchMarks } from '../services/marksService'
+import {
+  createStructuredMark,
+  deleteStructuredMark,
+  fetchAllMarks,
+  fetchExamTypes,
+  fetchSubjects,
+  updateStructuredMark,
+} from '../services/structuredMarksService'
 import { fetchStudents } from '../services/studentService'
 
-/**
- * Marks entry + history (Django JWT required).
- */
 export function MarksPage() {
   const { user, logout } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [students, setStudents] = useState([])
-  const [marks, setMarks] = useState([])
+  const [subjects, setSubjects] = useState([])
+  const [examTypes, setExamTypes] = useState([])
+  const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
   const [studentId, setStudentId] = useState('')
-  const [subject, setSubject] = useState('')
-  const [marksValue, setMarksValue] = useState('')
+  const [examTab, setExamTab] = useState(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [busyId, setBusyId] = useState(null)
 
-  const load = useCallback(async () => {
+  const loadMeta = useCallback(async () => {
+    const [sList, sub, et] = await Promise.all([
+      fetchStudents(),
+      fetchSubjects(),
+      fetchExamTypes(),
+    ])
+    setStudents(sList)
+    setSubjects(sub)
+    setExamTypes(et)
+  }, [])
+
+  const loadMarks = useCallback(async () => {
     setLoading(true)
     try {
-      const [sList, mList] = await Promise.all([
-        fetchStudents(),
-        fetchMarks(),
-      ])
-      setStudents(sList)
-      setMarks(mList)
+      const sid = studentId ? Number(studentId) : null
+      const list = await fetchAllMarks(sid)
+      const filtered = examTab
+        ? list.filter((r) => r.exam_type_slug === examTab)
+        : list
+      setRows(filtered)
     } catch (e) {
       notify.error(
         e?.response?.status === 401
@@ -43,18 +65,20 @@ export function MarksPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [studentId, examTab])
 
   useEffect(() => {
-    load()
-  }, [load])
+    loadMeta()
+  }, [loadMeta])
+
+  useEffect(() => {
+    loadMarks()
+  }, [loadMarks])
 
   useEffect(() => {
     if (location?.state?.focus !== 'add-marks') return
     const t = window.setTimeout(() => {
-      const el =
-        document.getElementById('mk-student') ||
-        document.getElementById('mk-subject')
+      const el = document.getElementById('marks-student-select')
       if (el && typeof el.focus === 'function') el.focus()
     }, 50)
     return () => window.clearTimeout(t)
@@ -66,121 +90,127 @@ export function MarksPage() {
     navigate('/login', { replace: true })
   }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    if (!studentId || !subject.trim()) {
-      notify.error('Choose a student and enter a subject.')
-      return
-    }
-    const m = parseInt(marksValue, 10)
-    if (Number.isNaN(m)) {
-      notify.error('Marks must be a number (0–100).')
-      return
-    }
-    setSaving(true)
-    try {
-      await createMark({
-        student: Number(studentId),
-        subject: subject.trim(),
-        marks: m,
-      })
+  const onSubmitModal = async (payload) => {
+    const { id, ...rest } = payload
+    if (id) {
+      await updateStructuredMark(id, rest)
+      notify.success('Marks updated.')
+    } else {
+      await createStructuredMark(rest)
       notify.success('Marks saved.')
-      setSubject('')
-      setMarksValue('')
-      await load()
+    }
+    await loadMarks()
+    await loadMeta()
+  }
+
+  const onDelete = async (id) => {
+    if (!window.confirm('Delete this marks entry?')) return
+    setBusyId(id)
+    try {
+      await deleteStructuredMark(id)
+      notify.success('Deleted.')
+      await loadMarks()
     } catch (e) {
-      const msg =
-        e?.response?.data && typeof e.response.data === 'object'
-          ? JSON.stringify(e.response.data)
-          : e?.message || 'Save failed'
-      notify.error(msg)
+      notify.error(e?.message || 'Delete failed.')
     } finally {
-      setSaving(false)
+      setBusyId(null)
     }
   }
 
   return (
     <DashboardLayout user={user} title="Marks" onLogout={handleLogout}>
-      <div className="mx-auto max-w-5xl space-y-8">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-slate-100">
-            Marks
-          </h2>
-          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            Add subject scores per student (validated 0–100 on the server).
-          </p>
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+              Structured marks
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
+              Catalog subjects × exam × date · validation & charts
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              setEditing(null)
+              setModalOpen(true)
+            }}
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            Add marks
+          </Button>
         </div>
 
-        <div className="grid gap-8 lg:grid-cols-2">
-          <Card className="border-slate-100 shadow-md shadow-slate-200/40 dark:border-slate-800 dark:shadow-slate-950/30">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Add marks</h3>
-            <form onSubmit={handleSubmit} className="mt-6 space-y-5">
-              <div>
-                <label
-                  className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300"
-                  htmlFor="mk-student"
-                >
-                  Student
-                </label>
-                <select
-                  id="mk-student"
-                  value={studentId}
-                  onChange={(e) => setStudentId(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50/50 px-4 py-3 text-sm text-slate-900 shadow-inner transition focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:bg-slate-900 dark:focus:ring-sky-900/40"
-                >
-                  <option value="">Select…</option>
-                  {students.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <InputField
-                id="mk-subject"
-                label="Subject"
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. Mathematics"
-              />
-              <InputField
-                id="mk-value"
-                label="Marks (0–100)"
-                type="number"
-                min={0}
-                max={100}
-                value={marksValue}
-                onChange={(e) => setMarksValue(e.target.value)}
-              />
-              <Button type="submit" variant="primary" fullWidth loading={saving}>
-                Save marks
-              </Button>
-            </form>
-          </Card>
-
-          <Card className="border-slate-100 shadow-md shadow-slate-200/40 dark:border-slate-800 dark:shadow-slate-950/30">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">All entries</h3>
-            {loading ? (
-              <Loader label="Loading…" className="py-12" />
-            ) : marks.length === 0 ? (
-              <p className="mt-6 text-sm text-slate-500 dark:text-slate-400">No marks yet.</p>
-            ) : (
-              <ul className="mt-4 max-h-[480px] divide-y divide-slate-100 overflow-auto dark:divide-slate-700">
-                {marks.map((row) => (
-                  <li
-                    key={row.id}
-                    className="py-3 text-sm transition-colors hover:bg-slate-50/80 dark:hover:bg-slate-800/50"
-                  >
-                    <p className="font-medium text-slate-900 dark:text-slate-100">
-                      {row.student_name} — {row.subject}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Score: {row.marks}</p>
-                  </li>
+        <Card compact className="border-slate-100 dark:border-slate-800">
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3 lg:items-end">
+            <div>
+              <label
+                className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
+                htmlFor="marks-student-select"
+              >
+                Student
+              </label>
+              <select
+                id="marks-student-select"
+                value={studentId}
+                onChange={(e) => setStudentId(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-xs text-slate-900 shadow-inner transition focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-100 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:bg-slate-900 dark:focus:ring-sky-900/40"
+              >
+                <option value="">All students</option>
+                {students.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
                 ))}
-              </ul>
-            )}
-          </Card>
-        </div>
+              </select>
+            </div>
+            <div className="md:col-span-2 lg:col-span-2">
+              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Exam type
+              </p>
+              <ExamTabs activeSlug={examTab} onChange={setExamTab} examTypes={examTypes} />
+            </div>
+          </div>
+        </Card>
+
+        {loading ? (
+          <Loader label="Loading marks…" className="py-10" size="sm" />
+        ) : (
+          <div className="grid gap-4 xl:grid-cols-5 xl:items-start">
+            <div className="min-w-0 xl:col-span-3">
+              <MarksTable
+                rows={rows}
+                onEdit={(row) => {
+                  setEditing(row)
+                  setModalOpen(true)
+                }}
+                onDelete={onDelete}
+                busyId={busyId}
+              />
+            </div>
+            <div className="min-w-0 xl:col-span-2">
+              <MarksChart rows={rows} />
+            </div>
+          </div>
+        )}
+
+        <EditMarksModal
+          open={modalOpen}
+          onClose={() => {
+            setModalOpen(false)
+            setEditing(null)
+          }}
+          onSubmit={onSubmitModal}
+          subjects={subjects}
+          examTypes={examTypes}
+          initial={editing}
+          selectedStudentId={
+            studentId ? Number(studentId) : editing?.student != null ? Number(editing.student) : undefined
+          }
+          students={students}
+        />
       </div>
     </DashboardLayout>
   )

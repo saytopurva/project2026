@@ -20,6 +20,7 @@ pip install -q -r requirements.txt
 
 cd backend
 python manage.py migrate --noinput
+python manage.py verify_database
 echo ""
 echo "Done. Start Django with:"
 echo "  bash scripts/run-backend.sh"

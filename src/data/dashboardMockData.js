@@ -27,15 +27,6 @@ export const DASHBOARD_OVERVIEW_MOCK = {
     { range: '91–100', count: 64 },
   ],
 
-  /** Subject averages for pie chart (sum not required to be 100 — relative slices) */
-  subjectPerformance: [
-    { name: 'Mathematics', value: 28 },
-    { name: 'Science', value: 24 },
-    { name: 'English', value: 18 },
-    { name: 'Social Studies', value: 16 },
-    { name: 'Languages', value: 14 },
-  ],
-
   recentActivity: [
     {
       id: '1',

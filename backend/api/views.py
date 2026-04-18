@@ -1,6 +1,9 @@
 from django.contrib.auth import get_user_model
 import json
-from django.db.models import Avg, Q
+import re
+from urllib.parse import unquote
+
+from django.db.models import Avg, ExpressionWrapper, F, FloatField, Q
 from django.utils import timezone
 from django.utils.timesince import timesince
 from rest_framework import status
@@ -15,31 +18,73 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
+from attendance.models import Attendance
+from marks.models import Marks as StructuredMark
+
+from .activity_log import log_activity
 from .models import (
     AcademicDetails,
-    Attendance,
+    ActivityLog,
     Certificate,
     Event,
     FeesDetails,
-    Marks,
     Notice,
     ParentDetails,
     Student,
+    UserProfile,
+)
+from .rbac import (
+    filter_attendance_queryset_for_user,
+    filter_marks_queryset_for_user,
+    filter_student_queryset_for_user,
+    get_profile,
+    profile_to_claims,
+    user_can_access_class,
+    user_can_access_class_results,
+    user_can_access_student,
+    user_can_edit_student_record,
+    user_can_manage_teachers,
+    user_is_privileged,
+    user_sees_limited_student_detail,
 )
 from .serializers import (
-    AttendanceSerializer,
     CertificateSerializer,
+    CreateTeacherSerializer,
     EventSerializer,
-    MarksSerializer,
     NoticeSerializer,
     StudentDetailSerializer,
+    StudentLimitedSerializer,
     StudentSerializer,
 )
 
 User = get_user_model()
 
 
+def _avg_percentage_marks_qs(qs):
+    row = qs.aggregate(
+        v=Avg(
+            ExpressionWrapper(
+                F('marks_obtained') * 100.0 / F('total_marks'),
+                output_field=FloatField(),
+            )
+        )
+    )
+    return float(row['v'] or 0)
+
+
+def _avg_percentage_structured_marks():
+    return _avg_percentage_marks_qs(StructuredMark.objects.all())
+
+
 # --- Public auth ---
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def health_check(request):
+    """Liveness check for the API (no auth). Use: GET /api/health/"""
+    return Response({'status': 'ok', 'service': 'sms-api'})
 
 
 @api_view(['POST'])
@@ -66,22 +111,163 @@ def register(request):
     return Response({'detail': 'created'}, status=status.HTTP_201_CREATED)
 
 
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def current_user_me(request):
+    """GET /api/me/ — role + scope for RBAC UI."""
+    u = request.user
+    p = get_profile(u)
+    claims = profile_to_claims(p)
+    sub_name = None
+    if p and getattr(p, 'assigned_subject_id', None) and p.assigned_subject:
+        sub_name = p.assigned_subject.name
+    rbac_label = 'Staff'
+    if user_is_privileged(u):
+        rbac_label = 'Full access (Principal / Vice Principal)'
+    elif p and p.role == UserProfile.Role.CLASS_TEACHER and (p.assigned_class or '').strip():
+        rbac_label = f'Your class: {p.assigned_class.strip()}'
+    elif p and p.role == UserProfile.Role.SUBJECT_TEACHER:
+        rbac_label = f'Your subject: {sub_name or "—"}'
+
+    return Response(
+        {
+            'id': u.id,
+            'email': u.email,
+            'name': (u.get_full_name() or u.first_name or u.username or '').strip(),
+            'role': claims['role'],
+            'assigned_class': claims['assigned_class'],
+            'assigned_subject_id': claims['assigned_subject_id'],
+            'assigned_subject_name': sub_name,
+            'rbac_label': rbac_label,
+        }
+    )
+
+
+@api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def create_teacher(request):
+    """POST /api/users/create-teacher/ — Principal / Vice Principal only."""
+    if not user_can_manage_teachers(request.user):
+        return Response(
+            {'detail': 'Only Principal or Vice Principal can create teachers.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    ser = CreateTeacherSerializer(data=request.data)
+    if not ser.is_valid():
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        user = ser.save()
+    except Exception as e:
+        return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    log_activity(
+        request.user,
+        ActivityLog.Action.TEACHER_CREATE,
+        target=user.email,
+        metadata={'teacher_id': user.id, 'role': request.data.get('role')},
+    )
+    return Response({'id': user.id, 'email': user.email}, status=status.HTTP_201_CREATED)
+
+
 # --- Protected: students ---
+
+
+def _natural_class_sort_key(value):
+    """
+    Sort class labels so 5,6,7,8,9,10 not 10,5,6,7,8,9 (plain string order).
+    Leading digits compare numerically; remainder (e.g. A/B) compares lexically.
+    """
+    s = str(value).strip()
+    m = re.match(r'^(\d+)(.*)$', s)
+    if m:
+        return (0, int(m.group(1)), m.group(2).lower())
+    return (1, s.lower())
+
+
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def list_student_classes(request):
+    """
+    GET /api/students/classes/ — distinct class names (student_class), sorted for UI tabs.
+    """
+    from marks.models import Marks
+
+    raw = (
+        Student.objects.exclude(student_class__isnull=True)
+        .exclude(student_class__exact='')
+        .values_list('student_class', flat=True)
+    )
+    classes = sorted(set(raw), key=_natural_class_sort_key)
+    if not user_is_privileged(request.user):
+        p = get_profile(request.user)
+        if p and p.role == UserProfile.Role.CLASS_TEACHER and (p.assigned_class or '').strip():
+            ac = p.assigned_class.strip()
+            classes = [c for c in classes if c == ac]
+        elif p and p.role == UserProfile.Role.SUBJECT_TEACHER and p.assigned_subject_id:
+            cls_set = (
+                Marks.objects.filter(subject_id=p.assigned_subject_id)
+                .values_list('student__student_class', flat=True)
+                .distinct()
+            )
+            classes = sorted(set(cls_set), key=_natural_class_sort_key)
+        else:
+            classes = []
+    return Response(classes)
 
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def get_students(request):
-    students = Student.objects.all()
-    serializer = StudentSerializer(students, many=True)
+    """
+    GET /api/students/ — optional ?class_name=… filters by ``Student.student_class`` (exact).
+    Ordered by roll number.
+    """
+    qs = filter_student_queryset_for_user(Student.objects.all(), request.user)
+    class_name = (request.query_params.get('class_name') or '').strip()
+    if class_name:
+        qs = qs.filter(student_class=class_name)
+    qs = qs.order_by('roll_no', 'id')
+    if user_sees_limited_student_detail(request.user):
+        serializer = StudentLimitedSerializer(qs, many=True)
+    else:
+        serializer = StudentSerializer(qs, many=True)
     return Response(serializer.data)
+
+
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def students_by_class(request, class_name):
+    """
+    GET /api/students/class/{class_name}/ — roster for class sheet (sorted by roll number).
+
+    ``class_name`` is URL-encoded (e.g. ``10A``, ``6``). Matches ``Student.student_class`` exactly.
+    """
+    raw = unquote(class_name or '').strip()
+    if not raw:
+        return Response({'detail': 'class_name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not user_can_access_class(request.user, raw):
+        return Response({'detail': 'Forbidden.'}, status=status.HTTP_403_FORBIDDEN)
+    qs = filter_student_queryset_for_user(
+        Student.objects.filter(student_class=raw),
+        request.user,
+    ).order_by('roll_no', 'id')
+    data = [{'id': s.id, 'name': s.name, 'roll_number': s.roll_no} for s in qs]
+    return Response(data)
 
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def add_student(request):
+    if not user_can_manage_teachers(request.user):
+        return Response(
+            {'detail': 'Only Principal or Vice Principal can add students.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     serializer = StudentSerializer(data=request.data)
     if serializer.is_valid():
         serializer.save()
@@ -104,8 +290,15 @@ def student_detail(request, pk):
         return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
+        if not user_can_access_student(request.user, student):
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if user_sees_limited_student_detail(request.user):
+            return Response(StudentLimitedSerializer(student).data)
         serializer = StudentDetailSerializer(student, context={'request': request})
         return Response(serializer.data)
+
+    if not user_can_edit_student_record(request.user, student):
+        return Response({'detail': 'Forbidden.'}, status=status.HTTP_403_FORBIDDEN)
 
     partial = request.method == 'PATCH'
     # If request is multipart, nested objects may arrive as JSON strings.
@@ -152,6 +345,8 @@ def student_certificates_create(request, pk):
         student = Student.objects.get(pk=pk)
     except Student.DoesNotExist:
         return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+    if not user_can_edit_student_record(request.user, student):
+        return Response({'detail': 'Forbidden.'}, status=status.HTTP_403_FORBIDDEN)
 
     payload = request.data.copy()
     payload['student'] = student.id
@@ -173,217 +368,6 @@ def student_certificate_delete(request, pk):
         return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
     cert.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-# --- Protected: attendance ---
-
-
-def _attendance_queryset(request):
-    qs = Attendance.objects.select_related('student', 'marked_by').order_by('-date', '-id')
-    student = request.query_params.get('student')
-    if student:
-        qs = qs.filter(student_id=student)
-    start = (request.query_params.get('start') or '').strip()
-    end = (request.query_params.get('end') or '').strip()
-    if start:
-        qs = qs.filter(date__gte=start)
-    if end:
-        qs = qs.filter(date__lte=end)
-    month = (request.query_params.get('month') or '').strip()
-    if month and len(month) >= 7:
-        y, m = month.split('-')[:2]
-        qs = qs.filter(date__year=int(y), date__month=int(m))
-    st = (request.query_params.get('status') or '').strip().upper()
-    if st in ('PRESENT', 'ABSENT', 'LEAVE'):
-        qs = qs.filter(status=st)
-    student_class = (request.query_params.get('class') or '').strip()
-    if student_class:
-        qs = qs.filter(student__student_class=student_class)
-    return qs
-
-
-@api_view(['GET', 'POST'])
-@authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def attendance_list_create(request):
-    if request.method == 'GET':
-        qs = _attendance_queryset(request)
-        serializer = AttendanceSerializer(qs, many=True, context={'request': request})
-        return Response(serializer.data)
-
-    serializer = AttendanceSerializer(data=request.data, context={'request': request})
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['GET'])
-@authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def attendance_by_student(request, student_id):
-    qs = (
-        Attendance.objects.filter(student_id=student_id)
-        .select_related('student', 'marked_by')
-        .order_by('-date', '-id')
-    )
-    start = (request.query_params.get('start') or '').strip()
-    end = (request.query_params.get('end') or '').strip()
-    month = (request.query_params.get('month') or '').strip()
-    if start:
-        qs = qs.filter(date__gte=start)
-    if end:
-        qs = qs.filter(date__lte=end)
-    if month and len(month) >= 7:
-        y, m = month.split('-')[:2]
-        qs = qs.filter(date__year=int(y), date__month=int(m))
-    st = (request.query_params.get('status') or '').strip().upper()
-    if st in ('PRESENT', 'ABSENT', 'LEAVE'):
-        qs = qs.filter(status=st)
-
-    serializer = AttendanceSerializer(qs, many=True, context={'request': request})
-    total = qs.count()
-    present_n = qs.filter(status=Attendance.Status.PRESENT).count()
-    pct = round((present_n / total) * 100) if total else 0
-    return Response(
-        {
-            'results': serializer.data,
-            'count': total,
-            'attendance_percentage': pct,
-        }
-    )
-
-
-@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
-@authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def attendance_detail(request, pk):
-    try:
-        rec = Attendance.objects.select_related('student', 'marked_by').get(pk=pk)
-    except Attendance.DoesNotExist:
-        return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-    if request.method == 'GET':
-        serializer = AttendanceSerializer(rec, context={'request': request})
-        return Response(serializer.data)
-
-    if request.method == 'DELETE':
-        rec.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-    partial = request.method == 'PATCH'
-    serializer = AttendanceSerializer(
-        rec,
-        data=request.data,
-        partial=partial,
-        context={'request': request},
-    )
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['POST'])
-@authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def attendance_bulk(request):
-    """
-    Body: { "date": "YYYY-MM-DD", "entries": [ {"student": id, "status": "PRESENT"|..., "leave_reason": ""}, ... ] }
-    """
-    from django.utils.dateparse import parse_date
-
-    date_str = (request.data.get('date') or '').strip()
-    entries = request.data.get('entries') or []
-    d = parse_date(date_str) if date_str else None
-    if not d:
-        return Response({'detail': 'Valid date is required.'}, status=status.HTTP_400_BAD_REQUEST)
-    if not isinstance(entries, list):
-        return Response({'detail': 'entries must be a list.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    user = request.user
-    ids = []
-    errors = []
-    for i, row in enumerate(entries):
-        sid = row.get('student')
-        st = (row.get('status') or '').strip().upper()
-        lr = (row.get('leave_reason') or '').strip()
-        if not sid:
-            errors.append({str(i): 'student id required'})
-            continue
-        if not Student.objects.filter(pk=sid).exists():
-            errors.append({str(i): f'Unknown student {sid}'})
-            continue
-        if st not in ('PRESENT', 'ABSENT', 'LEAVE'):
-            errors.append({str(i): f'Invalid status: {st}'})
-            continue
-        if st == 'LEAVE' and not lr:
-            errors.append({str(i): 'leave_reason required for LEAVE'})
-            continue
-        obj, _ = Attendance.objects.update_or_create(
-            student_id=sid,
-            date=d,
-            defaults={
-                'status': st,
-                'leave_reason': lr if st == Attendance.Status.LEAVE else '',
-                'marked_by': user,
-            },
-        )
-        ids.append(obj.id)
-
-    return Response({'updated_ids': ids, 'errors': errors}, status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-@authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def attendance_export(request):
-    """CSV download: ?student=1&start=&end=&month="""
-    import csv
-    from django.http import HttpResponse
-
-    qs = _attendance_queryset(request)
-    response = HttpResponse(content_type='text/csv')
-    response['Content-Disposition'] = 'attachment; filename="attendance.csv"'
-    w = csv.writer(response)
-    w.writerow(['id', 'student_id', 'student_name', 'date', 'status', 'leave_reason', 'marked_by', 'created_at'])
-    for r in qs:
-        w.writerow(
-            [
-                r.id,
-                r.student_id,
-                r.student.name,
-                r.date,
-                r.status,
-                r.leave_reason or '',
-                r.marked_by_id or '',
-                r.created_at.isoformat() if r.created_at else '',
-            ]
-        )
-    return response
-
-
-# --- Protected: marks ---
-
-
-@api_view(['GET'])
-@authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def get_marks(request):
-    records = Marks.objects.select_related('student').order_by('-id')
-    serializer = MarksSerializer(records, many=True)
-    return Response(serializer.data)
-
-
-@api_view(['POST'])
-@authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def add_marks(request):
-    serializer = MarksSerializer(data=request.data)
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=201)
-    return Response(serializer.errors, status=400)
 
 
 # --- Protected: notices (school notice board) ---
@@ -497,20 +481,25 @@ def _time_ago(dt):
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
     """Small KPI-only payload for the dashboard."""
-    total_students = Student.objects.count()
+    user = request.user
+    stu_qs = filter_student_queryset_for_user(Student.objects.all(), user)
+    total_students = stu_qs.count()
     total_classes = (
-        Student.objects.exclude(student_class__isnull=True)
+        stu_qs.exclude(student_class__isnull=True)
         .exclude(student_class__exact='')
         .values_list('student_class', flat=True)
         .distinct()
         .count()
     )
-    avg_marks = Marks.objects.aggregate(v=Avg('marks'))['v'] or 0
+    mq = filter_marks_queryset_for_user(StructuredMark.objects.all(), user)
+    avg_marks = _avg_percentage_marks_qs(mq)
 
-    # Last 30 days attendance %
     today = timezone.localdate()
     start = today - timezone.timedelta(days=30)
-    att_qs = Attendance.objects.filter(date__gte=start, date__lte=today)
+    att_qs = filter_attendance_queryset_for_user(
+        Attendance.objects.filter(date__gte=start, date__lte=today),
+        user,
+    )
     total_att = att_qs.count()
     present_att = att_qs.filter(status=Attendance.Status.PRESENT).count()
     attendance_percent = round((present_att / total_att) * 100) if total_att else 0
@@ -530,44 +519,44 @@ def dashboard_stats(request):
 @permission_classes([IsAuthenticated])
 def dashboard_overview(request):
     """Full dashboard payload matching `DASHBOARD_OVERVIEW_MOCK` shape."""
+    user = request.user
     today = timezone.localdate()
 
-    # KPIs
-    total_students = Student.objects.count()
+    stu_qs = filter_student_queryset_for_user(Student.objects.all(), user)
+    mq_base = filter_marks_queryset_for_user(StructuredMark.objects.all(), user)
+    att_base = filter_attendance_queryset_for_user(Attendance.objects.all(), user)
+
+    total_students = stu_qs.count()
     total_classes = (
-        Student.objects.exclude(student_class__isnull=True)
+        stu_qs.exclude(student_class__isnull=True)
         .exclude(student_class__exact='')
         .values_list('student_class', flat=True)
         .distinct()
         .count()
     )
-    avg_marks = Marks.objects.aggregate(v=Avg('marks'))['v'] or 0
+    avg_marks = _avg_percentage_marks_qs(mq_base)
 
-    # Today attendance snapshot
-    today_qs = Attendance.objects.filter(date=today)
+    today_qs = att_base.filter(date=today)
     present_today = today_qs.filter(status=Attendance.Status.PRESENT).count()
     absent_today = today_qs.filter(status=Attendance.Status.ABSENT).count()
     leave_today = today_qs.filter(status=Attendance.Status.LEAVE).count()
 
-    # Monthly attendance %
     start_30 = today - timezone.timedelta(days=30)
-    att_30 = Attendance.objects.filter(date__gte=start_30, date__lte=today)
+    att_30 = att_base.filter(date__gte=start_30, date__lte=today)
     total_att_30 = att_30.count()
     present_att_30 = att_30.filter(status=Attendance.Status.PRESENT).count()
     attendance_percent = round((present_att_30 / total_att_30) * 100) if total_att_30 else 0
 
-    # Attendance trend: last 6 weeks, oldest -> newest
     attendance_trend = []
     for i in range(6, 0, -1):
         week_end = today - timezone.timedelta(days=(i - 1) * 7)
         week_start = week_end - timezone.timedelta(days=6)
-        qs = Attendance.objects.filter(date__gte=week_start, date__lte=week_end)
+        qs = att_base.filter(date__gte=week_start, date__lte=week_end)
         total = qs.count()
         present = qs.filter(status=Attendance.Status.PRESENT).count()
         pct = round((present / total) * 100) if total else 0
         attendance_trend.append({'label': f'Week {7 - i}', 'value': pct})
 
-    # Marks distribution buckets
     buckets = [
         ('0–40', 0, 40),
         ('41–60', 41, 60),
@@ -575,24 +564,19 @@ def dashboard_overview(request):
         ('76–90', 76, 90),
         ('91–100', 91, 100),
     ]
+    pct_expr = ExpressionWrapper(
+        F('marks_obtained') * 100.0 / F('total_marks'),
+        output_field=FloatField(),
+    )
     marks_distribution = []
     for label, lo, hi in buckets:
         marks_distribution.append(
-            {'range': label, 'count': Marks.objects.filter(marks__gte=lo, marks__lte=hi).count()}
+            {
+                'range': label,
+                'count': mq_base.annotate(pct=pct_expr).filter(pct__gte=lo, pct__lte=hi).count(),
+            }
         )
 
-    # Subject performance: average marks per subject (top 5 by volume, stable)
-    subj_rows = (
-        Marks.objects.values('subject')
-        .annotate(avg=Avg('marks'))
-        .order_by('-avg')[:5]
-    )
-    subject_performance = [
-        {'name': r['subject'] or 'Unknown', 'value': round(float(r['avg'] or 0))}
-        for r in subj_rows
-    ]
-
-    # Students list (for dashboard search demo)
     students = [
         {
             'id': str(s.id),
@@ -600,12 +584,11 @@ def dashboard_overview(request):
             'className': str(s.student_class or ''),
             'section': '',
         }
-        for s in Student.objects.order_by('-id')[:50]
+        for s in stu_qs.order_by('-id')[:50]
     ]
 
-    # Recent activity (simple, last 5 across a few tables)
     activity = []
-    latest_student = Student.objects.order_by('-id').first()
+    latest_student = stu_qs.order_by('-id').first()
     if latest_student:
         activity.append(
             {
@@ -631,7 +614,6 @@ def dashboard_overview(request):
 
     latest_event = Event.objects.select_related('created_by').order_by('-created_at', '-id').first()
     if latest_event:
-        # created_at is datetime
         activity.append(
             {
                 'id': f'event-{latest_event.id}',
@@ -642,19 +624,19 @@ def dashboard_overview(request):
             }
         )
 
-    latest_marks = Marks.objects.select_related('student').order_by('-id').first()
+    latest_marks = mq_base.select_related('student', 'subject').order_by('-id').first()
     if latest_marks:
         activity.append(
             {
                 'id': f'marks-{latest_marks.id}',
                 'type': 'marks',
                 'message': 'Marks updated',
-                'detail': f'{latest_marks.subject} — {latest_marks.student.name}',
+                'detail': f'{latest_marks.subject.name} — {latest_marks.student.name}',
                 'time': 'recently',
             }
         )
 
-    latest_att = Attendance.objects.select_related('student').order_by('-date', '-id').first()
+    latest_att = att_base.select_related('student').order_by('-date', '-id').first()
     if latest_att:
         activity.append(
             {
@@ -668,6 +650,19 @@ def dashboard_overview(request):
 
     activity = activity[:5]
 
+    p = get_profile(user)
+    claims = profile_to_claims(p)
+    sub_name = None
+    if p and getattr(p, 'assigned_subject_id', None) and p.assigned_subject:
+        sub_name = p.assigned_subject.name
+    rbac_label = 'Staff'
+    if user_is_privileged(user):
+        rbac_label = 'Full access (Principal / Vice Principal)'
+    elif p and p.role == UserProfile.Role.CLASS_TEACHER and (p.assigned_class or '').strip():
+        rbac_label = f'Your class: {p.assigned_class.strip()}'
+    elif p and p.role == UserProfile.Role.SUBJECT_TEACHER:
+        rbac_label = f'Your subject: {sub_name or "—"}'
+
     return Response(
         {
             'totalStudents': total_students,
@@ -676,7 +671,6 @@ def dashboard_overview(request):
             'totalClasses': total_classes,
             'attendanceTrend': attendance_trend,
             'marksDistribution': marks_distribution,
-            'subjectPerformance': subject_performance,
             'recentActivity': activity,
             'todayAttendance': {
                 'present': present_today,
@@ -684,5 +678,12 @@ def dashboard_overview(request):
                 'leave': leave_today,
             },
             'students': students,
+            'roleContext': {
+                'role': claims['role'],
+                'assigned_class': claims['assigned_class'],
+                'assigned_subject_id': claims['assigned_subject_id'],
+                'assigned_subject_name': sub_name,
+                'rbac_label': rbac_label,
+            },
         }
     )

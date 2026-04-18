@@ -1,6 +1,13 @@
 """
 Django settings for backend project.
-Supports SQLite (default) or PostgreSQL via DATABASE_URL.
+
+Database (``DATABASE_URL`` via ``dj-database-url``):
+
+* **SQLite (default)** — if ``DATABASE_URL`` is unset: ``backend/db.sqlite3``
+* **PostgreSQL** — e.g. ``postgres://USER:PASSWORD@HOST:5432/DBNAME`` (requires ``psycopg2-binary``)
+* **MySQL** — e.g. ``mysql://USER:PASSWORD@HOST:3306/DBNAME`` (install ``mysqlclient``; see ``requirements-mysql.txt``)
+
+Wrong credentials or missing driver will fail at migrate/runserver with a clear driver/connection error.
 """
 
 import os
@@ -31,6 +38,9 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'api',
+    'attendance',
+    'marks',
+    'reports',
 ]
 
 MIDDLEWARE = [
@@ -64,8 +74,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-# --- Database: SQLite by default; set DATABASE_URL for PostgreSQL ---
-# Example: postgres://USER:PASSWORD@HOST:5432/DBNAME
+# --- Database: SQLite by default; override with DATABASE_URL (Postgres / MySQL / etc.) ---
 DATABASES = {
     'default': dj_database_url.config(
         default=f"sqlite:///{(BASE_DIR / 'db.sqlite3').resolve().as_posix()}",
@@ -102,10 +111,27 @@ REST_FRAMEWORK = {
     ],
 }
 
+DEFAULT_FROM_EMAIL = os.environ.get('DJANGO_DEFAULT_FROM_EMAIL', 'noreply@localhost')
+
+# Report cards & parent links (Results module)
+SCHOOL_NAME = os.environ.get('SCHOOL_NAME', 'Student Management School')
+FRONTEND_BASE_URL = os.environ.get('FRONTEND_BASE_URL', 'http://localhost:5173').rstrip('/')
+
+EMAIL_BACKEND = os.environ.get(
+    'DJANGO_EMAIL_BACKEND',
+    'django.core.mail.backends.console.EmailBackend',
+)
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'true').lower() == 'true'
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'AUTH_HEADER_TYPES': ('Bearer',),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': False,
+    'TOKEN_OBTAIN_SERIALIZER': 'api.jwt_serializers.CustomTokenObtainPairSerializer',
 }

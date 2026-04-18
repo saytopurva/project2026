@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:stack": "bash scripts/dev.sh",
     "setup:backend": "bash scripts/setup-backend.sh",
     "dev:django": "bash scripts/run-backend.sh",
     "build": "vite build",
@@ -15,6 +16,7 @@
     "axios": "^1.9.0",
     "date-fns": "^4.1.0",
     "firebase": "^12.12.0",
+    "html2canvas": "^1.4.1",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",
     "react-calendar": "^6.0.1",

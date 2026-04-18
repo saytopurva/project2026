@@ -1,8 +1,32 @@
 import { djangoClient } from './djangoApi'
 
-/** GET /api/students/ */
-export async function fetchStudents() {
-  const { data } = await djangoClient.get('/api/students/')
+/**
+ * GET /api/students/classes/ — distinct class names for tabs/filters.
+ */
+export async function fetchStudentClasses() {
+  const { data } = await djangoClient.get('/api/students/classes/')
+  return Array.isArray(data) ? data : []
+}
+
+/**
+ * GET /api/students/
+ * @param {{ class_name?: string }} [params] — if `class_name` is set, only that class (matches ``student_class``).
+ */
+export async function fetchStudents(params = {}) {
+  const class_name = params.class_name != null ? String(params.class_name).trim() : ''
+  const { data } = await djangoClient.get('/api/students/', {
+    params: class_name ? { class_name } : {},
+  })
+  return Array.isArray(data) ? data : []
+}
+
+/**
+ * GET /api/students/class/{class_name}/ — roster for class attendance sheet (roll order).
+ * @returns {Promise<Array<{ id: number, name: string, roll_number: number }>>}
+ */
+export async function fetchStudentsByClassName(className) {
+  const enc = encodeURIComponent(String(className).trim())
+  const { data } = await djangoClient.get(`/api/students/class/${enc}/`)
   return Array.isArray(data) ? data : []
 }
 

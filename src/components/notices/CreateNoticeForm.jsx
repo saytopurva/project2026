@@ -4,6 +4,7 @@ import { Button } from '../Button'
 import { Card } from '../Card'
 import { FormMessage } from '../FormMessage'
 import { InputField } from '../InputField'
+import { formatApiError } from '../../utils/formatApiError'
 import { createNotice } from '../../services/noticeService'
 
 /**
@@ -43,12 +44,7 @@ export function CreateNoticeForm({ onCreated }) {
       setMessage({ type: 'success', text: 'Notice posted successfully.' })
       onCreated?.(created)
     } catch (err) {
-      const detail =
-        err?.response?.data?.detail ||
-        (typeof err?.response?.data === 'object' && JSON.stringify(err.response.data)) ||
-        err?.message ||
-        'Could not post notice.'
-      setMessage({ type: 'error', text: String(detail) })
+      setMessage({ type: 'error', text: formatApiError(err) || 'Could not post notice.' })
     } finally {
       setSubmitting(false)
     }

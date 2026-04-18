@@ -125,3 +125,8 @@ export function clearAllAuthStorage() {
   localStorage.removeItem(KEY_AUTH)
   clearApiTokens()
 }
+
+/** True when refresh token is in localStorage (remember-me session). */
+export function isRememberMeSession() {
+  return !!localStorage.getItem(KEY_JWT_REFRESH)
+}

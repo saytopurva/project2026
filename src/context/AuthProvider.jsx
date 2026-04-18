@@ -13,6 +13,7 @@ import {
   consumeRememberMeIntent,
   getApiAccessToken,
   getApiSessionPassword,
+  isRememberMeSession,
   readOtpPendingUser,
   readPersistedUser,
   persistAuthenticatedUser,
@@ -21,6 +22,8 @@ import {
   setRememberMeIntent,
   writeOtpPendingUser,
 } from '../utils/storage'
+import { fetchCurrentUserMe } from '../services/meApi'
+import { AuthContext } from './authContext'
 
 /** Drop stale UI sessions that have no JWT (upgrades / failed bootstrap). */
 function readInitialUser() {
@@ -31,7 +34,6 @@ function readInitialUser() {
   }
   return saved
 }
-import { AuthContext } from './authContext'
 
 /**
  * Syncs pending OTP user to sessionStorage so a refresh on /verify-otp still works.
@@ -53,6 +55,27 @@ export function AuthProvider({ children }) {
     const auth = getFirebaseAuth()
     if (auth?.currentUser && !saved && !pending) {
       firebaseSignOut(auth).catch(() => {})
+    }
+  }, [])
+
+  /** Refresh staff role/scope from Django after JWT exists. */
+  useEffect(() => {
+    const token = getApiAccessToken()
+    const saved = readPersistedUser()
+    if (!token || !saved) return
+    let cancelled = false
+    fetchCurrentUserMe()
+      .then(({ data }) => {
+        if (cancelled) return
+        const merged = { ...saved, rbac: data }
+        setUser(merged)
+        persistAuthenticatedUser(merged, isRememberMeSession())
+      })
+      .catch(() => {
+        /* keep session; /api/me/ may fail if API down */
+      })
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -98,8 +121,17 @@ export function AuthProvider({ children }) {
         if (jwtRes.ok && jwtRes.access) {
           setApiTokens(jwtRes.access, jwtRes.refresh, rememberMe)
         }
-        setUser(pendingOtpUser)
-        persistAuthenticatedUser(pendingOtpUser, rememberMe)
+        let nextUser = pendingOtpUser
+        if (jwtRes.ok && jwtRes.access) {
+          try {
+            const { data } = await fetchCurrentUserMe()
+            nextUser = { ...pendingOtpUser, rbac: data }
+          } catch {
+            /* ignore */
+          }
+        }
+        setUser(nextUser)
+        persistAuthenticatedUser(nextUser, rememberMe)
         setPendingOtpUser(null)
         persistPending(null)
         if (!jwtRes.ok) {
@@ -179,6 +211,7 @@ export function AuthProvider({ children }) {
   const value = useMemo(
     () => ({
       user,
+      rbac: user?.rbac ?? null,
       pendingOtpUser,
       isAuthenticated: Boolean(user),
       needsOtp: Boolean(pendingOtpUser),

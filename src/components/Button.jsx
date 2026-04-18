@@ -5,14 +5,18 @@ export function Button({
   children,
   type = 'button',
   variant = 'primary',
+  size = 'md',
   fullWidth = false,
   disabled = false,
   loading = false,
   className = '',
   ...rest
 }) {
-  const base =
-    'inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-2.5 text-sm font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]'
+  const sizes = {
+    sm: 'rounded-lg px-3 py-1.5 text-xs font-semibold gap-1.5',
+    md: 'rounded-xl px-4 py-2.5 text-sm font-semibold gap-2',
+  }
+  const base = `inline-flex items-center justify-center transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] ${sizes[size] || sizes.md}`
 
   const variants = {
     primary:

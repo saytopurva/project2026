@@ -5,6 +5,8 @@ from django.db import models
 class Student(models.Model):
     name = models.CharField(max_length=100)
     email = models.EmailField()
+    parent_email = models.EmailField(blank=True, default='')
+    parent_phone = models.CharField(max_length=30, blank=True, default='')
     student_class = models.CharField(max_length=20)
     roll_no = models.IntegerField()
     photo = models.ImageField(upload_to='student_photos/%Y/%m/', blank=True, null=True)
@@ -36,8 +38,6 @@ class AcademicDetails(models.Model):
     attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
     overall_result = models.CharField(max_length=50, blank=True, default='')
     semester = models.CharField(max_length=50, blank=True, default='')
-    unit_test_marks = models.JSONField(blank=True, null=True, default=dict)
-    surprise_test_marks = models.JSONField(blank=True, null=True, default=dict)
     performance = models.TextField(blank=True, default='')
     creativity = models.TextField(blank=True, default='')
     teacher_remarks = models.TextField(blank=True, default='')
@@ -68,50 +68,6 @@ class Certificate(models.Model):
 
     def __str__(self):
         return f'{self.title} ({self.student.name})'
-
-
-class Attendance(models.Model):
-    """One row per student per calendar day."""
-
-    class Status(models.TextChoices):
-        PRESENT = 'PRESENT', 'Present'
-        ABSENT = 'ABSENT', 'Absent'
-        LEAVE = 'LEAVE', 'Leave'
-
-    student = models.ForeignKey(
-        Student,
-        on_delete=models.CASCADE,
-        related_name='attendance_records',
-    )
-    date = models.DateField()
-    status = models.CharField(max_length=10, choices=Status.choices)
-    leave_reason = models.TextField(blank=True, default='')
-    marked_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='marked_attendance',
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['-date', '-id']
-        constraints = [
-            models.UniqueConstraint(
-                fields=['student', 'date'],
-                name='uniq_attendance_student_date',
-            )
-        ]
-
-    def __str__(self):
-        return f'{self.student.name} {self.date} {self.status}'
-
-
-class Marks(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE)
-    subject = models.CharField(max_length=50)
-    marks = models.IntegerField()
 
 
 class Notice(models.Model):
@@ -166,3 +122,72 @@ class Event(models.Model):
 
     def __str__(self):
         return f'{self.title} ({self.date})'
+
+
+class UserProfile(models.Model):
+    """Staff role and scope (assigned class / subject). One-to-one with Django User."""
+
+    class Role(models.TextChoices):
+        PRINCIPAL = 'principal', 'Principal'
+        VICE_PRINCIPAL = 'vice_principal', 'Vice Principal'
+        CLASS_TEACHER = 'class_teacher', 'Class Teacher'
+        SUBJECT_TEACHER = 'subject_teacher', 'Subject Teacher'
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='profile',
+    )
+    role = models.CharField(
+        max_length=32,
+        choices=Role.choices,
+        default=Role.CLASS_TEACHER,
+    )
+    assigned_class = models.CharField(
+        max_length=40,
+        blank=True,
+        default='',
+        help_text='Exact student_class label for class teachers (e.g. 6, 10A).',
+    )
+    assigned_subject = models.ForeignKey(
+        'marks.Subject',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='subject_teachers',
+    )
+
+    class Meta:
+        verbose_name = 'user profile'
+
+    def __str__(self):
+        return f'{self.user} ({self.get_role_display()})'
+
+
+class ActivityLog(models.Model):
+    """Audit trail for marks / attendance changes."""
+
+    class Action(models.TextChoices):
+        MARKS_CREATE = 'marks_create', 'Marks create'
+        MARKS_UPDATE = 'marks_update', 'Marks update'
+        MARKS_DELETE = 'marks_delete', 'Marks delete'
+        ATTENDANCE_CREATE = 'attendance_create', 'Attendance create'
+        ATTENDANCE_UPDATE = 'attendance_update', 'Attendance update'
+        TEACHER_CREATE = 'teacher_create', 'Teacher create'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='activity_logs',
+    )
+    action = models.CharField(max_length=32, choices=Action.choices)
+    target = models.CharField(max_length=200, blank=True, default='')
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f'{self.action} by {self.user_id} @ {self.created_at}'
