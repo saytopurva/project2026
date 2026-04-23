@@ -1,21 +1,51 @@
-import apiClient from './apiClient'
+import axios from 'axios'
+import { djangoClient, getApiBaseURL } from './djangoApi'
 
 /**
- * Email/password step — returns user draft for OTP (via mock Axios).
+ * Public auth API (no Bearer) — email OTP exchange for JWT.
  */
-export async function loginWithEmailApi({ email, password }) {
-  const { data } = await apiClient.post('/auth/login', { email, password })
-  return data.user
-}
+const publicClient = axios.create({
+  baseURL: getApiBaseURL(),
+  timeout: 20000,
+  headers: { 'Content-Type': 'application/json' },
+})
 
-/** Verify 6-digit OTP against mock API. */
-export async function verifyOtpApi(otp) {
-  const { data } = await apiClient.post('/auth/verify-otp', { otp })
+/**
+ * POST /api/auth/send-otp/
+ * @param {string} email
+ */
+export async function sendOtpRequest(email) {
+  const { data } = await publicClient.post('/api/auth/send-otp/', { email })
   return data
 }
 
-/** Mock resend — resets client-side timer only; same static OTP applies. */
-export async function resendOtpApi() {
-  const { data } = await apiClient.post('/auth/resend-otp', {})
+/**
+ * POST /api/auth/verify-otp/
+ * @returns {{ access: string, refresh: string, user: { id: number, email: string, name: string } }}
+ */
+export async function verifyOtpRequest(email, otp) {
+  const { data } = await publicClient.post('/api/auth/verify-otp/', {
+    email,
+    otp: String(otp).trim(),
+  })
+  return data
+}
+
+/**
+ * POST /api/auth/google-login/ — Google Identity Services ID token.
+ * @param {string} idToken — JWT from credential.credential
+ */
+export async function googleLoginRequest(idToken) {
+  const { data } = await publicClient.post('/api/auth/google-login/', {
+    token: idToken,
+  })
+  return data
+}
+
+/**
+ * Blacklist all refresh tokens for the current user (sign out everywhere).
+ */
+export async function logoutAllDevicesRequest() {
+  const { data } = await djangoClient.post('/api/auth/logout-all/')
   return data
 }

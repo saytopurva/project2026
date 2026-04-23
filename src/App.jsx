@@ -1,10 +1,9 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import 'react-toastify/dist/ReactToastify.css'
 import { AuthProvider } from './context/AuthProvider'
-import { ProtectedRoute } from './components/ProtectedRoute'
+import { ProtectedLayout } from './components/ProtectedLayout'
 import { ToastHost } from './components/Toast'
 import { LoginPage } from './pages/LoginPage'
-import { OtpPage } from './pages/OtpPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { StudentsPage } from './pages/StudentsPage'
 import { AddStudentPage } from './pages/AddStudentPage'
@@ -18,117 +17,31 @@ import { AttendanceReportPage } from './pages/AttendanceReportPage'
 import { NoticeBoardPage } from './pages/NoticeBoardPage'
 import { CalendarPage } from './pages/CalendarPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
+import { AdminUsersPage } from './pages/AdminUsersPage'
+import { SchedulePage } from './pages/SchedulePage'
 
 function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/verify-otp" element={<OtpPage />} />
-      <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <DashboardPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/students"
-        element={
-          <ProtectedRoute>
-            <StudentsPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/student/:id"
-        element={
-          <ProtectedRoute>
-            <StudentProfilePage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/students/add"
-        element={
-          <ProtectedRoute>
-            <AddStudentPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <ProtectedRoute>
-            <SettingsPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/attendance"
-        element={
-          <ProtectedRoute>
-            <AttendancePage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/attendance/class"
-        element={
-          <ProtectedRoute>
-            <ClassAttendancePage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/marks"
-        element={
-          <ProtectedRoute>
-            <MarksPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/results"
-        element={
-          <ProtectedRoute>
-            <ResultsPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/attendance-report"
-        element={
-          <ProtectedRoute>
-            <AttendanceReportPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/notices"
-        element={
-          <ProtectedRoute>
-            <NoticeBoardPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/calendar"
-        element={
-          <ProtectedRoute>
-            <CalendarPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/analytics"
-        element={
-          <ProtectedRoute>
-            <AnalyticsPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route element={<ProtectedLayout />}>
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/students" element={<StudentsPage />} />
+        <Route path="/student/:id" element={<StudentProfilePage />} />
+        <Route path="/students/add" element={<AddStudentPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/attendance" element={<AttendancePage />} />
+        <Route path="/attendance/class" element={<ClassAttendancePage />} />
+        <Route path="/marks" element={<MarksPage />} />
+        <Route path="/results" element={<ResultsPage />} />
+        <Route path="/attendance-report" element={<AttendanceReportPage />} />
+        <Route path="/notices" element={<NoticeBoardPage />} />
+        <Route path="/calendar" element={<CalendarPage />} />
+        <Route path="/schedule" element={<SchedulePage />} />
+        <Route path="/analytics" element={<AnalyticsPage />} />
+        <Route path="/admin/users" element={<AdminUsersPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
     </Routes>
   )
 }

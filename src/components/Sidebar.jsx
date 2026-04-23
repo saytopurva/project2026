@@ -15,6 +15,7 @@ import {
   Megaphone,
   PanelLeft,
   Settings,
+  Shield,
   UserPlus,
   Users,
 } from 'lucide-react'
@@ -188,7 +189,15 @@ export function Sidebar({ collapsed = false, onToggleSidebar }) {
         ) : null}
 
         <NavSectionLabel collapsed={collapsed}>Schedule</NavSectionLabel>
+        <NavItem to="/schedule" icon={CalendarCheck} label="Schedule" collapsed={collapsed} />
         <NavItem to="/calendar" icon={CalendarDays} label="Calendar" collapsed={collapsed} />
+
+        {nav.showAdminUsers ? (
+          <>
+            <NavSectionLabel collapsed={collapsed}>Administration</NavSectionLabel>
+            <NavItem to="/admin/users" icon={Shield} label="Users & roles" collapsed={collapsed} />
+          </>
+        ) : null}
 
         <div className="hidden h-px bg-slate-100 dark:bg-slate-800 lg:my-1.5 lg:block" />
         <NavItem to="/notices" icon={Megaphone} label="Notices" collapsed={collapsed} />

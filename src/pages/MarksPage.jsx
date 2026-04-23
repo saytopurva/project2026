@@ -23,6 +23,7 @@ import { fetchStudents } from '../services/studentService'
 
 export function MarksPage() {
   const { user, logout } = useAuth()
+  const isSubjectTeacher = user?.rbac?.role === 'subject_teacher'
   const location = useLocation()
   const navigate = useNavigate()
   const [students, setStudents] = useState([])
@@ -206,6 +207,7 @@ export function MarksPage() {
           subjects={subjects}
           examTypes={examTypes}
           initial={editing}
+          lockSubject={isSubjectTeacher}
           selectedStudentId={
             studentId ? Number(studentId) : editing?.student != null ? Number(editing.student) : undefined
           }

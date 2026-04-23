@@ -146,7 +146,7 @@ def results_send(request, student_id: int):
 
     exam_label = detail['exam_type_label']
     school = getattr(settings, 'SCHOOL_NAME', 'School')
-    base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:5173').rstrip('/')
+    base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:3000').rstrip('/')
     profile_url = f'{base}/student/{student_id}'
 
     email_sent = False

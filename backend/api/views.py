@@ -15,6 +15,8 @@ from rest_framework.decorators import (
 )
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
+
+from .permissions import IsAuthenticatedAndSmsApproved
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
@@ -30,6 +32,7 @@ from .models import (
     FeesDetails,
     Notice,
     ParentDetails,
+    SchoolClass,
     Student,
     UserProfile,
 )
@@ -44,17 +47,20 @@ from .rbac import (
     user_can_access_student,
     user_can_edit_student_record,
     user_can_manage_teachers,
+    user_has_operational_access,
     user_is_privileged,
     user_sees_limited_student_detail,
 )
 from .serializers import (
+    ApprovePendingUserSerializer,
     CertificateSerializer,
-    CreateTeacherSerializer,
+    CreateSchoolUserSerializer,
     EventSerializer,
     NoticeSerializer,
     StudentDetailSerializer,
     StudentLimitedSerializer,
     StudentSerializer,
+    UpdateUserRoleSerializer,
 )
 
 User = get_user_model()
@@ -87,30 +93,6 @@ def health_check(request):
     return Response({'status': 'ok', 'service': 'sms-api'})
 
 
-@api_view(['POST'])
-@authentication_classes([])
-@permission_classes([AllowAny])
-def register(request):
-    """Create a Django user (username = email) for JWT login. Idempotent if user exists."""
-    email = (request.data.get('email') or '').strip().lower()
-    password = request.data.get('password') or ''
-    name = (request.data.get('name') or '').strip()
-    if not email or not password:
-        return Response(
-            {'detail': 'email and password are required'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if User.objects.filter(username=email).exists():
-        return Response({'detail': 'user already exists'}, status=status.HTTP_200_OK)
-    User.objects.create_user(
-        username=email,
-        email=email,
-        password=password,
-        first_name=name[:150] if name else '',
-    )
-    return Response({'detail': 'created'}, status=status.HTTP_201_CREATED)
-
-
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
@@ -118,43 +100,83 @@ def current_user_me(request):
     """GET /api/me/ — role + scope for RBAC UI."""
     u = request.user
     p = get_profile(u)
+    if u.is_superuser and not p:
+        return Response(
+            {
+                'id': u.id,
+                'email': u.email,
+                'name': (u.get_full_name() or u.first_name or u.username or '').strip(),
+                'last_login': u.last_login.isoformat() if u.last_login else None,
+                'role': UserProfile.Role.PRINCIPAL,
+                'assigned_class': '',
+                'assigned_subject_id': None,
+                'assigned_subject_name': None,
+                'rbac_label': 'Superuser',
+                'approval_status': UserProfile.ApprovalStatus.APPROVED,
+                'can_access_app': True,
+                'picture': '',
+            }
+        )
     claims = profile_to_claims(p)
     sub_name = None
     if p and getattr(p, 'assigned_subject_id', None) and p.assigned_subject:
         sub_name = p.assigned_subject.name
+    subject_names = None
+    if p:
+        try:
+            subject_names = list(
+                p.assigned_subjects.order_by('name').values_list('name', flat=True)
+            )
+        except Exception:
+            subject_names = None
     rbac_label = 'Staff'
-    if user_is_privileged(u):
+    if p and p.approval_status == UserProfile.ApprovalStatus.REJECTED:
+        rbac_label = 'Access denied'
+    elif p and p.role == UserProfile.Role.UNASSIGNED:
+        rbac_label = 'Pending approval'
+    elif user_is_privileged(u):
         rbac_label = 'Full access (Principal / Vice Principal)'
+    elif p and p.role == UserProfile.Role.STAFF:
+        rbac_label = 'Admin staff'
     elif p and p.role == UserProfile.Role.CLASS_TEACHER and (p.assigned_class or '').strip():
         rbac_label = f'Your class: {p.assigned_class.strip()}'
     elif p and p.role == UserProfile.Role.SUBJECT_TEACHER:
         rbac_label = f'Your subject: {sub_name or "—"}'
+
+    can_access = user_has_operational_access(u)
 
     return Response(
         {
             'id': u.id,
             'email': u.email,
             'name': (u.get_full_name() or u.first_name or u.username or '').strip(),
+            'last_login': u.last_login.isoformat() if u.last_login else None,
             'role': claims['role'],
             'assigned_class': claims['assigned_class'],
+            'assigned_classes': claims.get('assigned_classes') or [],
             'assigned_subject_id': claims['assigned_subject_id'],
+            'assigned_subject_ids': claims.get('assigned_subject_ids') or [],
             'assigned_subject_name': sub_name,
+            'assigned_subject_names': subject_names or ([sub_name] if sub_name else []),
             'rbac_label': rbac_label,
+            'approval_status': claims.get('approval_status'),
+            'can_access_app': can_access,
+            'picture': (p.avatar_url or '') if p else '',
         }
     )
 
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
-def create_teacher(request):
-    """POST /api/users/create-teacher/ — Principal / Vice Principal only."""
+@permission_classes([IsAuthenticatedAndSmsApproved])
+def create_school_user(request):
+    """POST /api/users/create-user/ — Principal / Vice Principal only."""
     if not user_can_manage_teachers(request.user):
         return Response(
-            {'detail': 'Only Principal or Vice Principal can create teachers.'},
+            {'detail': 'Only Principal or Vice Principal can create users.'},
             status=status.HTTP_403_FORBIDDEN,
         )
-    ser = CreateTeacherSerializer(data=request.data)
+    ser = CreateSchoolUserSerializer(data=request.data)
     if not ser.is_valid():
         return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
     try:
@@ -163,11 +185,178 @@ def create_teacher(request):
         return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
     log_activity(
         request.user,
-        ActivityLog.Action.TEACHER_CREATE,
+        ActivityLog.Action.USER_CREATE,
         target=user.email,
-        metadata={'teacher_id': user.id, 'role': request.data.get('role')},
+        metadata={'user_id': user.id, 'role': request.data.get('role')},
     )
     return Response({'id': user.id, 'email': user.email}, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticatedAndSmsApproved])
+def list_pending_users(request):
+    """GET /api/users/pending/ — Principal / Vice Principal only."""
+    if not user_can_manage_teachers(request.user):
+        return Response({'detail': 'Forbidden.'}, status=status.HTTP_403_FORBIDDEN)
+    qs = (
+        UserProfile.objects.filter(
+            approval_status=UserProfile.ApprovalStatus.PENDING,
+            role=UserProfile.Role.UNASSIGNED,
+        )
+        .select_related('user')
+        .order_by('-user__date_joined')
+    )
+    out = []
+    for prof in qs:
+        u = prof.user
+        out.append(
+            {
+                'id': u.id,
+                'email': u.email,
+                'name': (u.get_full_name() or u.first_name or u.username or '').strip(),
+                'requested_at': prof.user.date_joined.isoformat() if u.date_joined else '',
+            }
+        )
+    return Response(out)
+
+
+@api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticatedAndSmsApproved])
+def approve_pending_user(request, pk):
+    """POST /api/users/<id>/approve/ — assign role and approve."""
+    if not user_can_manage_teachers(request.user):
+        return Response({'detail': 'Forbidden.'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        prof = UserProfile.objects.select_related('user').get(user_id=pk)
+    except UserProfile.DoesNotExist:
+        return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+    if prof.approval_status != UserProfile.ApprovalStatus.PENDING:
+        return Response(
+            {'detail': 'User is not pending approval.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    ser = ApprovePendingUserSerializer(data=request.data)
+    if not ser.is_valid():
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+    data = ser.validated_data
+    subj = data.get('assigned_subject')
+    prof.role = data['role']
+    assigned_classes = [
+        str(c).strip()
+        for c in (data.get('assigned_classes') or [])
+        if str(c).strip()
+    ]
+    single = (data.get('assigned_class') or '').strip()
+    if not assigned_classes and single:
+        assigned_classes = [single]
+    prof.assigned_class = single or (assigned_classes[0] if assigned_classes else '')
+    prof.assigned_subject = subj
+    prof.approval_status = UserProfile.ApprovalStatus.APPROVED
+    prof.save()
+    if prof.role in (UserProfile.Role.CLASS_TEACHER, UserProfile.Role.SUBJECT_TEACHER):
+        cls_objs = [SchoolClass.objects.get_or_create(name=c)[0] for c in assigned_classes]
+        prof.assigned_classes.set(cls_objs)
+    else:
+        prof.assigned_classes.clear()
+    if prof.role == UserProfile.Role.SUBJECT_TEACHER and subj:
+        prof.assigned_subjects.set([subj])
+    else:
+        prof.assigned_subjects.clear()
+    log_activity(
+        request.user,
+        ActivityLog.Action.USER_APPROVE,
+        target=prof.user.email,
+        metadata={'user_id': pk, 'role': prof.role, 'assigned_classes': assigned_classes},
+    )
+    return Response({'detail': 'User approved.', 'id': pk})
+
+
+@api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticatedAndSmsApproved])
+def reject_pending_user(request, pk):
+    """POST /api/users/<id>/reject/"""
+    if not user_can_manage_teachers(request.user):
+        return Response({'detail': 'Forbidden.'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        prof = UserProfile.objects.get(user_id=pk)
+    except UserProfile.DoesNotExist:
+        return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+    if prof.approval_status != UserProfile.ApprovalStatus.PENDING:
+        return Response(
+            {'detail': 'User is not pending approval.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    prof.approval_status = UserProfile.ApprovalStatus.REJECTED
+    prof.save(update_fields=['approval_status'])
+    log_activity(
+        request.user,
+        ActivityLog.Action.USER_REJECT,
+        target=prof.user.email,
+        metadata={'user_id': pk, 'reason': request.data.get('reason', '')},
+    )
+    return Response({'detail': 'User rejected.', 'id': pk})
+
+
+@api_view(['PATCH'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticatedAndSmsApproved])
+def update_user_role(request, pk):
+    """PATCH /api/users/<id>/profile/ — change role / scope (Principal / VP)."""
+    if not user_can_manage_teachers(request.user):
+        return Response({'detail': 'Forbidden.'}, status=status.HTTP_403_FORBIDDEN)
+    if request.user.id == int(pk):
+        return Response(
+            {'detail': 'You cannot change your own role via this endpoint.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        prof = UserProfile.objects.select_related('user').get(user_id=pk)
+    except UserProfile.DoesNotExist:
+        return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+    ser = UpdateUserRoleSerializer(data=request.data)
+    if not ser.is_valid():
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+    data = ser.validated_data
+    subj = data.get('assigned_subject')
+    old = prof.role
+    prof.role = data['role']
+    assigned_classes = [
+        str(c).strip()
+        for c in (data.get('assigned_classes') or [])
+        if str(c).strip()
+    ]
+    single = (data.get('assigned_class') or '').strip()
+    if not assigned_classes and single:
+        assigned_classes = [single]
+    prof.assigned_class = single or (assigned_classes[0] if assigned_classes else '')
+    prof.assigned_subject = subj
+    if prof.approval_status == UserProfile.ApprovalStatus.PENDING:
+        prof.approval_status = UserProfile.ApprovalStatus.APPROVED
+    prof.save()
+    if prof.role in (UserProfile.Role.CLASS_TEACHER, UserProfile.Role.SUBJECT_TEACHER):
+        cls_objs = [SchoolClass.objects.get_or_create(name=c)[0] for c in assigned_classes]
+        prof.assigned_classes.set(cls_objs)
+    else:
+        prof.assigned_classes.clear()
+    if prof.role == UserProfile.Role.SUBJECT_TEACHER and subj:
+        prof.assigned_subjects.set([subj])
+    else:
+        prof.assigned_subjects.clear()
+    log_activity(
+        request.user,
+        ActivityLog.Action.USER_ROLE_UPDATE,
+        target=prof.user.email,
+        metadata={
+            'user_id': pk,
+            'from_role': old,
+            'to_role': prof.role,
+            'assigned_classes': assigned_classes,
+        },
+    )
+    return Response({'detail': 'Profile updated.', 'id': pk})
 
 
 # --- Protected: students ---
@@ -187,7 +376,7 @@ def _natural_class_sort_key(value):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def list_student_classes(request):
     """
     GET /api/students/classes/ — distinct class names (student_class), sorted for UI tabs.
@@ -202,16 +391,27 @@ def list_student_classes(request):
     classes = sorted(set(raw), key=_natural_class_sort_key)
     if not user_is_privileged(request.user):
         p = get_profile(request.user)
-        if p and p.role == UserProfile.Role.CLASS_TEACHER and (p.assigned_class or '').strip():
-            ac = p.assigned_class.strip()
-            classes = [c for c in classes if c == ac]
-        elif p and p.role == UserProfile.Role.SUBJECT_TEACHER and p.assigned_subject_id:
-            cls_set = (
-                Marks.objects.filter(subject_id=p.assigned_subject_id)
-                .values_list('student__student_class', flat=True)
-                .distinct()
-            )
-            classes = sorted(set(cls_set), key=_natural_class_sort_key)
+        if p and p.role == UserProfile.Role.STAFF:
+            pass
+        elif p and p.role == UserProfile.Role.CLASS_TEACHER:
+            allowed = []
+            try:
+                allowed = list(p.assigned_classes.values_list('name', flat=True))
+            except Exception:
+                allowed = []
+            if not allowed and (p.assigned_class or '').strip():
+                allowed = [p.assigned_class.strip()]
+            classes = [c for c in classes if c in set(a.strip() for a in allowed if str(a).strip())]
+        elif p and p.role == UserProfile.Role.SUBJECT_TEACHER:
+            allowed = []
+            try:
+                allowed = list(p.assigned_classes.values_list('name', flat=True))
+            except Exception:
+                allowed = []
+            if not allowed and (p.assigned_class or '').strip():
+                allowed = [p.assigned_class.strip()]
+            allowed_set = set(a.strip() for a in allowed if str(a).strip())
+            classes = [c for c in classes if c in allowed_set]
         else:
             classes = []
     return Response(classes)
@@ -219,7 +419,7 @@ def list_student_classes(request):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def get_students(request):
     """
     GET /api/students/ — optional ?class_name=… filters by ``Student.student_class`` (exact).
@@ -239,7 +439,7 @@ def get_students(request):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def students_by_class(request, class_name):
     """
     GET /api/students/class/{class_name}/ — roster for class sheet (sorted by roll number).
@@ -261,7 +461,7 @@ def students_by_class(request, class_name):
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def add_student(request):
     if not user_can_manage_teachers(request.user):
         return Response(
@@ -277,7 +477,7 @@ def add_student(request):
 
 @api_view(['GET', 'PUT', 'PATCH'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def student_detail(request, pk):
     try:
@@ -338,7 +538,7 @@ def student_detail(request, pk):
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 def student_certificates_create(request, pk):
     try:
@@ -360,7 +560,7 @@ def student_certificates_create(request, pk):
 
 @api_view(['DELETE'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def student_certificate_delete(request, pk):
     try:
         cert = Certificate.objects.get(pk=pk)
@@ -375,7 +575,7 @@ def student_certificate_delete(request, pk):
 
 @api_view(['GET', 'POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def notices_list_create(request):
     if request.method == 'GET':
@@ -397,7 +597,7 @@ def notices_list_create(request):
 
 @api_view(['DELETE'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def notice_delete(request, pk):
     try:
         notice = Notice.objects.get(pk=pk)
@@ -417,7 +617,7 @@ def notice_delete(request, pk):
 
 @api_view(['GET', 'POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def events_list_create(request):
     if request.method == 'GET':
         qs = Event.objects.select_related('created_by').order_by('date', '-created_at', '-id')
@@ -448,7 +648,7 @@ def events_list_create(request):
 
 @api_view(['DELETE'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def event_delete(request, pk):
     try:
         ev = Event.objects.get(pk=pk)
@@ -478,7 +678,7 @@ def _time_ago(dt):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def dashboard_stats(request):
     """Small KPI-only payload for the dashboard."""
     user = request.user
@@ -516,7 +716,7 @@ def dashboard_stats(request):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def dashboard_overview(request):
     """Full dashboard payload matching `DASHBOARD_OVERVIEW_MOCK` shape."""
     user = request.user

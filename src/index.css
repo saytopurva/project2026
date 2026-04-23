@@ -47,6 +47,16 @@ html.dark body {
   color: #f1f5f9;
 }
 
+/* Google Identity Services — let the official iframe render at full container width (max 400px per GIS). */
+.google-sign-in-btn {
+  min-height: 44px;
+}
+.google-sign-in-btn > div {
+  width: 100% !important;
+  display: flex !important;
+  justify-content: center !important;
+}
+
 @keyframes page-enter {
   from {
     opacity: 0;
@@ -143,4 +153,28 @@ html.dark .react-calendar__tile--now {
 html.dark .react-calendar__tile--active {
   background: rgba(56, 189, 248, 0.22);
   color: #e0f2fe;
+}
+
+/* Login page — subtle entrance */
+@keyframes login-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.login-card-enter {
+  animation: login-fade-up 0.55s ease-out both;
+}
+.login-brand-enter {
+  animation: login-fade-up 0.6s ease-out 0.05s both;
+}
+.login-illus-enter {
+  animation: login-fade-up 0.7s ease-out 0.12s both;
+}
+.login-surface {
+  animation: login-fade-up 0.4s ease-out both;
 }

@@ -6,9 +6,20 @@ import { ThemeSegmented } from './ThemeSegmented'
 /**
  * Top bar: title, optional global search, notifications, theme, profile.
  */
+function userAvatarSrc(user) {
+  if (!user) return ''
+  return (
+    user.picture ||
+    user.photoURL ||
+    user.rbac?.picture ||
+    ''
+  )
+}
+
 export function Navbar({ title, user, onLogout, headerSearch }) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef(null)
+  const avatarSrc = userAvatarSrc(user)
 
   useEffect(() => {
     if (!open) return
@@ -86,22 +97,25 @@ export function Navbar({ title, user, onLogout, headerSearch }) {
             aria-expanded={open}
             aria-haspopup="menu"
           >
-            {user?.photoURL ? (
+            {avatarSrc ? (
               <img
-                src={user.photoURL}
+                src={avatarSrc}
                 alt=""
-                className="h-8 w-8 rounded-lg border border-white object-cover shadow-sm dark:border-slate-600"
+                referrerPolicy="no-referrer"
+                className="h-8 w-8 rounded-full border border-slate-200 object-cover shadow-sm ring-1 ring-slate-200/80 dark:border-slate-600 dark:ring-slate-600/80"
               />
             ) : (
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-sky-500 to-indigo-500 text-xs font-semibold text-white shadow-sm">
-                {(user?.name || '?').charAt(0).toUpperCase()}
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-indigo-500 text-xs font-semibold text-white shadow-sm ring-1 ring-white/30">
+                {(user?.name || user?.email || '?').charAt(0).toUpperCase()}
               </span>
             )}
-            <UserRound
-              className="hidden h-4 w-4 text-slate-400 sm:block dark:text-slate-500"
-              strokeWidth={1.75}
-              aria-hidden
-            />
+            {!avatarSrc ? (
+              <UserRound
+                className="hidden h-4 w-4 text-slate-400 sm:block dark:text-slate-500"
+                strokeWidth={1.75}
+                aria-hidden
+              />
+            ) : null}
             <ChevronDown
               className={`h-4 w-4 text-slate-400 transition-transform dark:text-slate-500 ${open ? 'rotate-180' : ''}`}
               strokeWidth={1.75}

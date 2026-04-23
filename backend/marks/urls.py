@@ -9,6 +9,8 @@ urlpatterns = [
     path('results/<int:student_id>/', views_results.results_detail),
     path('results/', views_results.results_list),
     path('analytics/subject-performance/', views.subject_performance_analytics),
+    path('teacher/subject-analytics/', views.teacher_subject_analytics),
+    path('teacher/workload/', views.teacher_workload_summary),
     path('subjects/', views.subject_list),
     path('exam-types/', views.exam_type_list),
     path('marks/distribution/', views.marks_distribution),

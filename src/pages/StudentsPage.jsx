@@ -10,22 +10,30 @@ import { useAuth } from '../hooks/useAuth'
 import { DashboardLayout } from '../layouts/DashboardLayout'
 import { fetchStudentClasses, fetchStudents } from '../services/studentService'
 import { sortClassNames } from '../utils/sortClassNames'
-
-function cx(...parts) {
-  return parts.filter(Boolean).join(' ')
-}
+import { ClassSelector } from '../components/students/ClassSelector'
 
 /**
  * Class-wise student directory: API returns only the selected class; tabs switch class.
  */
 export function StudentsPage() {
   const { user, logout } = useAuth()
+  const role = user?.rbac?.role || user?.role || ''
+  const assignedClasses = useMemo(
+    () => user?.rbac?.assigned_classes || user?.assigned_classes || [],
+    [user],
+  )
+  const assignedClass = useMemo(
+    () => (user?.rbac?.assigned_class || user?.assigned_class || '').trim(),
+    [user],
+  )
+  const isClassTeacher = role === 'class_teacher'
   const navigate = useNavigate()
   const [classes, setClasses] = useState([])
   const [selectedClass, setSelectedClass] = useState('')
   const [students, setStudents] = useState([])
   const [loadingMeta, setLoadingMeta] = useState(true)
   const [loadingClass, setLoadingClass] = useState(false)
+  const [metaByClass, setMetaByClass] = useState({})
   const [search, setSearch] = useState('')
   const [rollSort, setRollSort] = useState('asc')
 
@@ -34,6 +42,24 @@ export function StudentsPage() {
     ;(async () => {
       setLoadingMeta(true)
       try {
+        // Class teachers: enforce assigned class scope in UI.
+        // - If multiple classes: show selector
+        // - If single class: hide selector and lock to assigned class
+        if (isClassTeacher) {
+          const cls = sortClassNames(
+            assignedClasses.length > 0
+              ? assignedClasses
+              : assignedClass
+                ? [assignedClass]
+                : [],
+          )
+          if (cancelled) return
+          setClasses(cls)
+          setSelectedClass(cls[0] || '')
+          setStudents([])
+          return
+        }
+
         const list = await fetchStudentClasses()
         if (cancelled) return
         const cls = sortClassNames(Array.isArray(list) ? list : [])
@@ -57,7 +83,7 @@ export function StudentsPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [assignedClass, assignedClasses, isClassTeacher])
 
   useEffect(() => {
     const cn = String(selectedClass || '').trim()
@@ -71,6 +97,12 @@ export function StudentsPage() {
       try {
         const list = await fetchStudents({ class_name: cn })
         if (!cancelled) setStudents(Array.isArray(list) ? list : [])
+        if (!cancelled) {
+          setMetaByClass((prev) => ({
+            ...prev,
+            [cn]: { ...(prev[cn] || {}), count: Array.isArray(list) ? list.length : 0 },
+          }))
+        }
       } catch (e) {
         if (!cancelled) {
           notify.error(formatApiError(e) || 'Could not load students.')
@@ -84,6 +116,36 @@ export function StudentsPage() {
       cancelled = true
     }
   }, [selectedClass])
+
+  // Prefetch student counts for other classes (premium badges) without backend changes.
+  useEffect(() => {
+    if (!classes.length) return
+    let cancelled = false
+    const concurrency = 3
+    const queue = classes.filter((c) => metaByClass[c]?.count == null)
+    let idx = 0
+    const runOne = async () => {
+      while (!cancelled) {
+        const c = queue[idx++]
+        if (!c) return
+        try {
+          const list = await fetchStudents({ class_name: c })
+          if (cancelled) return
+          setMetaByClass((prev) => ({
+            ...prev,
+            [c]: { ...(prev[c] || {}), count: Array.isArray(list) ? list.length : 0 },
+          }))
+        } catch {
+          // ignore — badge will show "—"
+        }
+      }
+    }
+    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, runOne)
+    Promise.all(workers).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [classes, metaByClass])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -112,6 +174,8 @@ export function StudentsPage() {
   const apiHint =
     import.meta.env.VITE_API_URL ||
     (import.meta.env.DEV ? 'Vite proxy → Django :8000' : 'Configure VITE_API_URL')
+
+  const showClassSelector = !isClassTeacher || classes.length > 1
 
   return (
     <DashboardLayout user={user} title="Students" onLogout={handleLogout}>
@@ -143,31 +207,41 @@ export function StudentsPage() {
           </Card>
         ) : (
           <>
-            <div className="border-b border-slate-200/90 dark:border-slate-700">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Class
-              </p>
-              <div className="-mb-px flex gap-1 overflow-x-auto pb-px">
-                {classes.map((c) => {
-                  const active = selectedClass === c
-                  return (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => setSelectedClass(c)}
-                      className={cx(
-                        'shrink-0 rounded-t-lg border px-3 py-2 text-xs font-semibold transition',
-                        active
-                          ? 'border-slate-200 border-b-transparent bg-white text-sky-800 dark:border-slate-600 dark:border-b-transparent dark:bg-slate-900 dark:text-sky-200'
-                          : 'border-transparent bg-slate-100/80 text-slate-600 hover:bg-slate-100 dark:bg-slate-800/80 dark:text-slate-400 dark:hover:bg-slate-800',
-                      )}
-                    >
-                      {c}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
+            {showClassSelector ? (
+              <ClassSelector
+                classes={classes}
+                selected={selectedClass}
+                metaByClass={metaByClass}
+                onSelect={(c) => {
+                  setSelectedClass(c)
+                  setSearch('')
+                }}
+                onOpenClass={() => {
+                  // Keep user on this page; selector already switches the class.
+                }}
+                onTakeAttendance={(c) => {
+                  // Optional: route to attendance with class context if you have it.
+                  notify.info(`Take attendance for Class ${c} (demo).`)
+                }}
+                sticky
+              />
+            ) : (
+              <Card className="border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      Assigned class
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                      Class {selectedClass || assignedClass || '—'}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700 dark:bg-sky-950/40 dark:text-sky-200">
+                    Class Teacher
+                  </span>
+                </div>
+              </Card>
+            )}
 
             <div>
               <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">

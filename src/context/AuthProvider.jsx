@@ -1,31 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth'
-import {
-  getFirebaseAuth,
-  googleProvider,
-  isFirebaseConfigured,
-} from '../firebase/config'
-import { bootstrapDjangoJwt } from '../services/djangoAuthService'
-import { loginWithEmailApi, verifyOtpApi } from '../services/authService'
+import { fetchCurrentUserMe } from '../services/meApi'
+import { upsertSavedAccount } from '../utils/accountStorage'
+import { logoutAllDevicesRequest } from '../services/authService'
 import {
   clearAllAuthStorage,
-  clearApiSessionPassword,
-  consumeRememberMeIntent,
   getApiAccessToken,
-  getApiSessionPassword,
   isRememberMeSession,
-  readOtpPendingUser,
-  readPersistedUser,
   persistAuthenticatedUser,
-  setApiSessionPassword,
+  readPersistedUser,
   setApiTokens,
-  setRememberMeIntent,
-  writeOtpPendingUser,
 } from '../utils/storage'
-import { fetchCurrentUserMe } from '../services/meApi'
 import { AuthContext } from './authContext'
 
-/** Drop stale UI sessions that have no JWT (upgrades / failed bootstrap). */
+/** Drop stale UI sessions that have no JWT. */
 function readInitialUser() {
   const saved = readPersistedUser()
   if (saved && !getApiAccessToken()) {
@@ -35,30 +22,10 @@ function readInitialUser() {
   return saved
 }
 
-/**
- * Syncs pending OTP user to sessionStorage so a refresh on /verify-otp still works.
- */
-function persistPending(userDraft) {
-  writeOtpPendingUser(userDraft)
-}
-
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => readInitialUser())
-  const [pendingOtpUser, setPendingOtpUser] = useState(() =>
-    readOtpPendingUser()
-  )
 
-  // Clear orphaned Firebase web sessions (user closed tab before OTP).
-  useEffect(() => {
-    const saved = readPersistedUser()
-    const pending = readOtpPendingUser()
-    const auth = getFirebaseAuth()
-    if (auth?.currentUser && !saved && !pending) {
-      firebaseSignOut(auth).catch(() => {})
-    }
-  }, [])
-
-  /** Refresh staff role/scope from Django after JWT exists. */
+  /** Refresh staff RBAC after reload when JWT exists. */
   useEffect(() => {
     const token = getApiAccessToken()
     const saved = readPersistedUser()
@@ -67,167 +34,111 @@ export function AuthProvider({ children }) {
     fetchCurrentUserMe()
       .then(({ data }) => {
         if (cancelled) return
-        const merged = { ...saved, rbac: data }
+        const merged = {
+          ...saved,
+          rbac: data,
+          last_login: data?.last_login ?? saved?.last_login,
+          picture: data?.picture ?? saved?.picture,
+          photoURL: data?.picture ?? saved?.photoURL ?? saved?.picture,
+        }
         setUser(merged)
         persistAuthenticatedUser(merged, isRememberMeSession())
       })
-      .catch(() => {
-        /* keep session; /api/me/ may fail if API down */
-      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
   }, [])
 
-  const setPending = useCallback((draft) => {
-    setPendingOtpUser(draft)
-    persistPending(draft)
+  /**
+   * Store JWT + user profile; fetch /api/me/ for RBAC.
+   * @param {{ access: string, refresh: string, user?: { email?: string, name?: string } }} payload
+   */
+  const completeJwtLogin = useCallback(async (payload, rememberMe) => {
+    const { access, refresh, user: u } = payload
+    if (!access || !refresh) {
+      return { ok: false, error: 'Invalid server response.' }
+    }
+    setApiTokens(access, refresh, rememberMe)
+    const authMethod = u?.auth_method === 'google' ? 'google' : 'otp'
+    let nextUser = {
+      email: u?.email || '',
+      name: u?.name || u?.email?.split('@')[0] || 'User',
+      last_login: u?.last_login ?? null,
+      picture: u?.picture || '',
+      photoURL: u?.picture || '',
+      provider: authMethod,
+    }
+    try {
+      const { data } = await fetchCurrentUserMe()
+      nextUser = {
+        ...nextUser,
+        rbac: data,
+        last_login: data?.last_login ?? nextUser.last_login,
+        picture: data?.picture || nextUser.picture,
+      }
+    } catch {
+      /* offline / API down */
+    }
+    upsertSavedAccount({
+      email: nextUser.email,
+      name: nextUser.name,
+      picture: nextUser.picture,
+      provider: authMethod,
+    })
+    setUser(nextUser)
+    persistAuthenticatedUser(nextUser, rememberMe)
+    return { ok: true }
   }, [])
 
-  const loginWithPassword = useCallback(
-    async (email, password, rememberMe) => {
-      try {
-        const profile = await loginWithEmailApi({ email, password })
-        setRememberMeIntent(rememberMe)
-        setApiSessionPassword(password)
-        setPending(profile)
-        return { ok: true }
-      } catch (e) {
-        const msg =
-          e?.response?.data?.message ||
-          e?.message ||
-          'Login failed. Please try again.'
-        return { ok: false, error: msg }
-      }
-    },
-    [setPending]
-  )
-
-  const verifyOtpAndCompleteLogin = useCallback(
-    async (otp) => {
-      if (!pendingOtpUser) {
-        return { ok: false, error: 'Session expired. Please sign in again.' }
-      }
-      try {
-        await verifyOtpApi(otp)
-        const rememberMe = consumeRememberMeIntent()
-        const apiPassword = getApiSessionPassword()
-        const jwtRes = await bootstrapDjangoJwt(
-          pendingOtpUser.email,
-          apiPassword,
-          pendingOtpUser.name
-        )
-        clearApiSessionPassword()
-        if (jwtRes.ok && jwtRes.access) {
-          setApiTokens(jwtRes.access, jwtRes.refresh, rememberMe)
-        }
-        let nextUser = pendingOtpUser
-        if (jwtRes.ok && jwtRes.access) {
-          try {
-            const { data } = await fetchCurrentUserMe()
-            nextUser = { ...pendingOtpUser, rbac: data }
-          } catch {
-            /* ignore */
-          }
-        }
-        setUser(nextUser)
-        persistAuthenticatedUser(nextUser, rememberMe)
-        setPendingOtpUser(null)
-        persistPending(null)
-        if (!jwtRes.ok) {
-          return { ok: true, apiWarning: jwtRes.error }
-        }
-        return { ok: true }
-      } catch (e) {
-        const msg =
-          e?.response?.data?.message ||
-          e?.message ||
-          'Verification failed.'
-        return { ok: false, error: msg }
-      }
-    },
-    [pendingOtpUser]
-  )
-
-  /**
-   * Google always continues to OTP (same flow as email).
-   * Remember-me follows the checkbox on the login form via setRememberMeIntent.
-   */
-  const loginWithGoogle = useCallback(
-    async (rememberMe) => {
-      if (!isFirebaseConfigured()) {
-        return {
-          ok: false,
-          error:
-            'Firebase is not configured. Add VITE_FIREBASE_* keys to your .env file.',
-        }
-      }
-      const auth = getFirebaseAuth()
-      if (!auth) {
-        return { ok: false, error: 'Firebase Auth could not be initialized.' }
-      }
-      try {
-        const cred = await signInWithPopup(auth, googleProvider)
-        const u = cred.user
-        setRememberMeIntent(rememberMe)
-        const profile = {
-          email: u.email || '',
-          name: u.displayName || u.email?.split('@')[0] || 'User',
-          photoURL: u.photoURL || null,
-          provider: 'google',
-        }
-        const apiPw =
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `g-${Date.now()}`
-        setApiSessionPassword(apiPw)
-        setPending(profile)
-        return { ok: true }
-      } catch (e) {
-        const message =
-          e?.code === 'auth/popup-closed-by-user'
-            ? 'Sign-in was cancelled.'
-            : e?.message || 'Google sign-in failed.'
-        return { ok: false, error: message }
-      }
-    },
-    [setPending]
-  )
-
   const logout = useCallback(async () => {
-    const auth = getFirebaseAuth()
-    if (auth?.currentUser) {
-      try {
-        await firebaseSignOut(auth)
-      } catch {
-        /* still clear local session */
-      }
+    setUser(null)
+    clearAllAuthStorage()
+  }, [])
+
+  const logoutAllDevices = useCallback(async () => {
+    try {
+      await logoutAllDevicesRequest()
+    } catch {
+      /* still clear local session */
     }
     setUser(null)
-    setPendingOtpUser(null)
     clearAllAuthStorage()
+  }, [])
+
+  const refreshRbac = useCallback(async () => {
+    const token = getApiAccessToken()
+    if (!token) return
+    try {
+      const { data } = await fetchCurrentUserMe()
+      setUser((prev) => {
+        if (!prev) return prev
+        const next = {
+          ...prev,
+          rbac: data,
+          last_login: data?.last_login ?? prev.last_login,
+          picture: data?.picture ?? prev.picture,
+          photoURL: data?.picture ?? prev.photoURL ?? prev.picture,
+        }
+        persistAuthenticatedUser(next, isRememberMeSession())
+        return next
+      })
+    } catch {
+      /* ignore */
+    }
   }, [])
 
   const value = useMemo(
     () => ({
       user,
       rbac: user?.rbac ?? null,
-      pendingOtpUser,
       isAuthenticated: Boolean(user),
-      needsOtp: Boolean(pendingOtpUser),
-      loginWithPassword,
-      verifyOtpAndCompleteLogin,
-      loginWithGoogle,
+      completeJwtLogin,
       logout,
+      logoutAllDevices,
+      refreshRbac,
     }),
-    [
-      user,
-      pendingOtpUser,
-      loginWithPassword,
-      verifyOtpAndCompleteLogin,
-      loginWithGoogle,
-      logout,
-    ]
+    [user, completeJwtLogin, logout, logoutAllDevices, refreshRbac]
   )
 
   return (

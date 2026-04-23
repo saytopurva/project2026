@@ -13,10 +13,16 @@ def create_user_profile(sender, instance, created, **kwargs):
         return
     if UserProfile.objects.filter(user=instance).exists():
         return
-    # First user in DB → Principal; others default to class teacher until staff assigns role
-    role = (
-        UserProfile.Role.PRINCIPAL
-        if User.objects.count() <= 1
-        else UserProfile.Role.CLASS_TEACHER
-    )
-    UserProfile.objects.create(user=instance, role=role)
+    # Bootstrap: first user becomes Principal (approved). Everyone else starts UNASSIGNED pending.
+    if User.objects.count() <= 1:
+        UserProfile.objects.create(
+            user=instance,
+            role=UserProfile.Role.PRINCIPAL,
+            approval_status=UserProfile.ApprovalStatus.APPROVED,
+        )
+    else:
+        UserProfile.objects.create(
+            user=instance,
+            role=UserProfile.Role.UNASSIGNED,
+            approval_status=UserProfile.ApprovalStatus.PENDING,
+        )

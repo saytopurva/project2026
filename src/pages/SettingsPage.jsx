@@ -1,5 +1,11 @@
 import { useNavigate } from 'react-router-dom'
-import { Award, BookOpenCheck, ChevronRight, Server } from 'lucide-react'
+import {
+  Award,
+  BookOpenCheck,
+  ChevronRight,
+  KeyRound,
+  Server,
+} from 'lucide-react'
 import { Card } from '../components/Card'
 import { ThemeSegmented } from '../components/ThemeSegmented'
 import { notify } from '../utils/notify'
@@ -39,8 +45,20 @@ const links = [
 /**
  * Settings hub — shortcuts to academic modules + API note.
  */
+function formatLastLogin(iso) {
+  if (!iso) return '—'
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    })
+  } catch {
+    return String(iso)
+  }
+}
+
 export function SettingsPage() {
-  const { user, logout } = useAuth()
+  const { user, logout, logoutAllDevices } = useAuth()
   const nav = rbacNavFlags(user?.rbac)
   const navigate = useNavigate()
 
@@ -49,6 +67,26 @@ export function SettingsPage() {
     notify.info('You have been logged out.')
     navigate('/login', { replace: true })
   }
+
+  const handleLogoutAllDevices = async () => {
+    if (
+      !window.confirm(
+        'Sign out from all devices? You will need to sign in again with email OTP.'
+      )
+    ) {
+      return
+    }
+    try {
+      await logoutAllDevices()
+      notify.info('Signed out from all devices.')
+      navigate('/login', { replace: true })
+    } catch {
+      notify.error('Could not complete sign-out.')
+    }
+  }
+
+  const lastLogin =
+    user?.rbac?.last_login ?? user?.last_login ?? null
 
   const apiBase =
     import.meta.env.VITE_API_URL ||
@@ -87,6 +125,34 @@ export function SettingsPage() {
             </button>
           ))}
         </div>
+
+        <Card>
+          <div className="flex items-start gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-sky-700 ring-1 ring-sky-100 dark:bg-sky-950/50 dark:text-sky-300 dark:ring-sky-900/60">
+              <KeyRound className="h-5 w-5" strokeWidth={1.75} aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1 space-y-3">
+              <div>
+                <h3 className="font-semibold text-slate-900 dark:text-slate-100">
+                  Security
+                </h3>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                  Last successful sign-in (from the server).
+                </p>
+                <p className="mt-2 font-mono text-sm text-slate-800 dark:text-slate-200">
+                  {formatLastLogin(lastLogin)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleLogoutAllDevices}
+                className="rounded-lg border border-red-200 bg-red-50/80 px-3 py-2 text-sm font-medium text-red-800 transition hover:bg-red-100 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200 dark:hover:bg-red-950/60"
+              >
+                Log out from all devices
+              </button>
+            </div>
+          </div>
+        </Card>
 
         <Card>
           <div className="space-y-4">

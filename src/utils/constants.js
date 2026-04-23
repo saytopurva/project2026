@@ -1,11 +1,5 @@
-/** Demo OTP accepted by the mock verification API. */
-export const MOCK_OTP = '123456'
-
-/** Simulated network delay for mock Axios adapter (ms). */
-export const MOCK_DELAY_MS = 550
-
-/** Minimum password length on the login form. */
+/** Minimum password length where passwords are used. */
 export const PASSWORD_MIN_LENGTH = 8
 
-/** OTP resend / expiry countdown (seconds). */
-export const OTP_TIMER_SECONDS = 60
+/** Default resend cooldown for OTP UI (align with backend OTP_RESEND_COOLDOWN_SECONDS). */
+export const OTP_TIMER_SECONDS = 30

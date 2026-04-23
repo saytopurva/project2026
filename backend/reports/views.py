@@ -5,11 +5,11 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from api.models import Student
+from api.permissions import IsAuthenticatedAndSmsApproved
 from api.rbac import subject_teacher_cannot_access_attendance, user_can_access_student
 
 from .models import AttendanceReportSendLog
@@ -19,7 +19,7 @@ from .services.email_report import format_report_email_body, send_attendance_rep
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_monthly_report(request, student_id):
     """
     GET /api/attendance/report/<student_id>/?month=&year=&format=json|csv
@@ -69,7 +69,7 @@ def _report_csv_response(payload: dict) -> HttpResponse:
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def send_attendance_report(request, student_id):
     """
     POST /api/send-report/<student_id>/

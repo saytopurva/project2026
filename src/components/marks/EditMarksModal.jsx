@@ -20,6 +20,7 @@ function cx(...parts) {
  *   initial: object | null,
  *   selectedStudentId?: number,
  *   students?: Array<{id:number,name:string}>,
+ *   lockSubject?: boolean,
  * }} props
  */
 export function EditMarksModal({
@@ -31,6 +32,7 @@ export function EditMarksModal({
   initial,
   selectedStudentId,
   students = [],
+  lockSubject = false,
 }) {
   const [subjectId, setSubjectId] = useState('')
   const [examTypeId, setExamTypeId] = useState('')
@@ -74,6 +76,16 @@ export function EditMarksModal({
       )
     }
   }, [open, sessionKey, initial, selectedStudentId])
+
+  useEffect(() => {
+    if (!open) return
+    if (!lockSubject) return
+    if (initial) return
+    if (!subjects?.length) return
+    if (subjectId) return
+    // Backend already restricts subjects list for subject teachers.
+    setSubjectId(String(subjects[0].id))
+  }, [open, lockSubject, initial, subjects, subjectId])
 
   useEffect(() => {
     if (!open || initial) return
@@ -204,6 +216,7 @@ export function EditMarksModal({
               required
               value={subjectId}
               onChange={(e) => setSubjectId(e.target.value)}
+              disabled={lockSubject}
               className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm dark:border-slate-600 dark:bg-slate-800/80"
             >
               <option value="">Select subject…</option>
@@ -213,6 +226,11 @@ export function EditMarksModal({
                 </option>
               ))}
             </select>
+            {lockSubject ? (
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                Subject is locked to your assigned subject.
+              </p>
+            ) : null}
             {subjects.length === 0 ? (
               <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">
                 No subjects from the server. Run{' '}

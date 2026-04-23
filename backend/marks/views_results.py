@@ -11,11 +11,11 @@ from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from api.models import Student, UserProfile
+from api.permissions import IsAuthenticatedAndSmsApproved
 from api.rbac import (
     get_profile,
     user_can_access_class_results,
@@ -62,7 +62,7 @@ def _narrow_result_payload_for_subject_teacher(user, detail: dict) -> dict:
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def results_list(request):
     """
     GET /api/results/?class_name=&exam_type=
@@ -96,7 +96,7 @@ def results_list(request):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def results_detail(request, student_id: int):
     """
     GET /api/results/{student_id}/?exam_type=
@@ -123,7 +123,7 @@ def results_detail(request, student_id: int):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def results_pdf(request, student_id: int):
     """
     GET /api/results/{student_id}/pdf/?exam_type=
@@ -164,7 +164,7 @@ def _whatsapp_digits(phone: str) -> str | None:
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def results_send(request, student_id: int):
     """
     POST /api/results/{student_id}/send/
@@ -198,7 +198,7 @@ def results_send(request, student_id: int):
 
     pdf_bytes = build_reportcard_pdf(detail)
     parent_email = (student.parent_email or '').strip()
-    base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:5173').rstrip('/')
+    base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:3000').rstrip('/')
     profile_link = f'{base}/student/{student.id}?tab=results'
 
     student_name = student.name

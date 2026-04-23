@@ -8,6 +8,7 @@ from .models import (
     FeesDetails,
     Notice,
     ParentDetails,
+    SchoolClass,
     Student,
     UserProfile,
 )
@@ -34,7 +35,14 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UserProfile
-        fields = ['role', 'assigned_class', 'assigned_subject', 'assigned_subject_name']
+        fields = [
+            'role',
+            'assigned_class',
+            'assigned_classes',
+            'assigned_subject',
+            'assigned_subjects',
+            'assigned_subject_name',
+        ]
 
 
 class MeSerializer(serializers.Serializer):
@@ -43,17 +51,39 @@ class MeSerializer(serializers.Serializer):
     name = serializers.CharField(read_only=True)
     role = serializers.CharField(read_only=True)
     assigned_class = serializers.CharField(read_only=True)
+    assigned_classes = serializers.ListField(child=serializers.CharField(), read_only=True)
     assigned_subject_id = serializers.IntegerField(allow_null=True, read_only=True)
+    assigned_subject_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
     assigned_subject_name = serializers.CharField(allow_null=True, read_only=True)
     rbac_label = serializers.CharField(read_only=True)
+    approval_status = serializers.CharField(read_only=True)
+    can_access_app = serializers.BooleanField(read_only=True)
 
 
-class CreateTeacherSerializer(serializers.Serializer):
+# Roles Principal may assign via POST /api/users/create-user/ (not self-service; not UNASSIGNED/PRINCIPAL)
+_CREATE_USER_ROLE_CHOICES = [
+    c
+    for c in UserProfile.Role.choices
+    if c[0]
+    not in (UserProfile.Role.UNASSIGNED, UserProfile.Role.PRINCIPAL)
+]
+
+
+class CreateSchoolUserSerializer(serializers.Serializer):
+    """Admin-only user creation — optional password (otherwise user signs in via email OTP only)."""
+
     email = serializers.EmailField()
-    password = serializers.CharField(min_length=8, write_only=True)
+    password = serializers.CharField(
+        min_length=8, write_only=True, required=False, allow_blank=True
+    )
     name = serializers.CharField(max_length=150)
-    role = serializers.ChoiceField(choices=UserProfile.Role.choices)
+    role = serializers.ChoiceField(choices=_CREATE_USER_ROLE_CHOICES)
     assigned_class = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    assigned_classes = serializers.ListField(
+        child=serializers.CharField(max_length=40),
+        required=False,
+        allow_empty=True,
+    )
     assigned_subject = serializers.PrimaryKeyRelatedField(
         queryset=__import__('marks.models', fromlist=['Subject']).Subject.objects.all(),
         required=False,
@@ -62,32 +92,107 @@ class CreateTeacherSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         role = attrs['role']
-        if role in (UserProfile.Role.CLASS_TEACHER,) and not (attrs.get('assigned_class') or '').strip():
+        classes = [str(c).strip() for c in (attrs.get('assigned_classes') or []) if str(c).strip()]
+        assigned_class = (attrs.get('assigned_class') or '').strip()
+        if role in (UserProfile.Role.CLASS_TEACHER,) and not (assigned_class or classes):
             raise serializers.ValidationError({'assigned_class': 'Required for class teacher.'})
-        if role == UserProfile.Role.SUBJECT_TEACHER and not attrs.get('assigned_subject'):
-            raise serializers.ValidationError({'assigned_subject': 'Required for subject teacher.'})
+        if role == UserProfile.Role.SUBJECT_TEACHER:
+            if not attrs.get('assigned_subject'):
+                raise serializers.ValidationError({'assigned_subject': 'Required for subject teacher.'})
+            if not (assigned_class or classes):
+                raise serializers.ValidationError({'assigned_classes': 'At least one class is required.'})
         return attrs
 
     def create(self, validated_data):
         email = validated_data['email'].strip().lower()
         if User.objects.filter(username=email).exists():
             raise serializers.ValidationError({'email': 'A user with this email already exists.'})
+        pwd = (validated_data.get('password') or '').strip()
         u = User.objects.create_user(
             username=email,
             email=email,
-            password=validated_data['password'],
+            password=pwd or '!',
             first_name=validated_data['name'][:150],
         )
+        if not pwd:
+            u.set_unusable_password()
+            u.save()
         subj = validated_data.get('assigned_subject')
-        profile, _ = UserProfile.objects.update_or_create(
+        classes = [str(c).strip() for c in (validated_data.get('assigned_classes') or []) if str(c).strip()]
+        single = (validated_data.get('assigned_class') or '').strip()
+        if not classes and single:
+            classes = [single]
+        prof, _ = UserProfile.objects.update_or_create(
             user=u,
             defaults={
                 'role': validated_data['role'],
                 'assigned_class': (validated_data.get('assigned_class') or '').strip(),
                 'assigned_subject': subj,
+                'approval_status': UserProfile.ApprovalStatus.APPROVED,
             },
         )
+        if validated_data['role'] in (UserProfile.Role.CLASS_TEACHER, UserProfile.Role.SUBJECT_TEACHER):
+            cls_objs = [SchoolClass.objects.get_or_create(name=c)[0] for c in classes]
+            prof.assigned_classes.set(cls_objs)
+        if validated_data['role'] == UserProfile.Role.SUBJECT_TEACHER and subj:
+            prof.assigned_subjects.add(subj)
         return u
+
+
+class ApprovePendingUserSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=_CREATE_USER_ROLE_CHOICES)
+    assigned_class = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    assigned_classes = serializers.ListField(
+        child=serializers.CharField(max_length=40),
+        required=False,
+        allow_empty=True,
+    )
+    assigned_subject = serializers.PrimaryKeyRelatedField(
+        queryset=__import__('marks.models', fromlist=['Subject']).Subject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def validate(self, attrs):
+        role = attrs['role']
+        classes = [str(c).strip() for c in (attrs.get('assigned_classes') or []) if str(c).strip()]
+        assigned_class = (attrs.get('assigned_class') or '').strip()
+        if role in (UserProfile.Role.CLASS_TEACHER,) and not (assigned_class or classes):
+            raise serializers.ValidationError({'assigned_class': 'Required for class teacher.'})
+        if role == UserProfile.Role.SUBJECT_TEACHER:
+            if not attrs.get('assigned_subject'):
+                raise serializers.ValidationError({'assigned_subject': 'Required for subject teacher.'})
+            if not (assigned_class or classes):
+                raise serializers.ValidationError({'assigned_classes': 'At least one class is required.'})
+        return attrs
+
+
+class UpdateUserRoleSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=_CREATE_USER_ROLE_CHOICES)
+    assigned_class = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    assigned_classes = serializers.ListField(
+        child=serializers.CharField(max_length=40),
+        required=False,
+        allow_empty=True,
+    )
+    assigned_subject = serializers.PrimaryKeyRelatedField(
+        queryset=__import__('marks.models', fromlist=['Subject']).Subject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def validate(self, attrs):
+        role = attrs['role']
+        classes = [str(c).strip() for c in (attrs.get('assigned_classes') or []) if str(c).strip()]
+        assigned_class = (attrs.get('assigned_class') or '').strip()
+        if role in (UserProfile.Role.CLASS_TEACHER,) and not (assigned_class or classes):
+            raise serializers.ValidationError({'assigned_class': 'Required for class teacher.'})
+        if role == UserProfile.Role.SUBJECT_TEACHER:
+            if not attrs.get('assigned_subject'):
+                raise serializers.ValidationError({'assigned_subject': 'Required for subject teacher.'})
+            if not (assigned_class or classes):
+                raise serializers.ValidationError({'assigned_classes': 'At least one class is required.'})
+        return attrs
 
 
 class ParentDetailsSerializer(serializers.ModelSerializer):

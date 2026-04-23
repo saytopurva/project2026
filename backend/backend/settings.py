@@ -18,6 +18,13 @@ import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / '.env')
+except ImportError:
+    pass
+
 SECRET_KEY = os.environ.get(
     'DJANGO_SECRET_KEY',
     'django-insecure-ld&hn-^z=!na12g^66q7o+fm^%fnuxc2tcsw4o@b-vjae5ux0g',
@@ -37,6 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'api',
     'attendance',
     'marks',
@@ -115,17 +123,42 @@ DEFAULT_FROM_EMAIL = os.environ.get('DJANGO_DEFAULT_FROM_EMAIL', 'noreply@localh
 
 # Report cards & parent links (Results module)
 SCHOOL_NAME = os.environ.get('SCHOOL_NAME', 'Student Management School')
-FRONTEND_BASE_URL = os.environ.get('FRONTEND_BASE_URL', 'http://localhost:5173').rstrip('/')
+FRONTEND_BASE_URL = os.environ.get('FRONTEND_BASE_URL', 'http://localhost:3000').rstrip('/')
 
+# Default: console backend for local dev. Set EMAIL_HOST_USER + EMAIL_HOST_PASSWORD (e.g. Gmail app password)
+# to send real OTP emails via SMTP (typically smtp.gmail.com:587 + TLS).
 EMAIL_BACKEND = os.environ.get(
     'DJANGO_EMAIL_BACKEND',
     'django.core.mail.backends.console.EmailBackend',
 )
-EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'true').lower() == 'true'
+
+if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD and EMAIL_BACKEND.endswith('console.EmailBackend'):
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'sms-auth',
+    }
+}
+
+# Email OTP login
+OTP_EXPIRY_MINUTES = int(os.environ.get('OTP_EXPIRY_MINUTES', '5'))
+OTP_MAX_VERIFY_ATTEMPTS = int(os.environ.get('OTP_MAX_VERIFY_ATTEMPTS', '5'))
+OTP_MAX_SENDS_PER_HOUR = int(os.environ.get('OTP_MAX_SENDS_PER_HOUR', '5'))
+OTP_MAX_BURST_SENDS = int(os.environ.get('OTP_MAX_BURST_SENDS', '3'))
+OTP_BURST_WINDOW_SECONDS = int(os.environ.get('OTP_BURST_WINDOW_SECONDS', '900'))
+OTP_RESEND_COOLDOWN_SECONDS = int(os.environ.get('OTP_RESEND_COOLDOWN_SECONDS', '30'))
+OTP_EMAIL_SUBJECT = os.environ.get('OTP_EMAIL_SUBJECT', 'Your Login OTP')
+OTP_PEPPER = os.environ.get('OTP_PEPPER', '') or SECRET_KEY
+
+# Google Sign-In (ID token verification — must match frontend OAuth client ID)
+GOOGLE_OAUTH_CLIENT_ID = os.environ.get('GOOGLE_OAUTH_CLIENT_ID', '').strip()
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),

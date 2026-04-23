@@ -2,6 +2,22 @@ from django.conf import settings
 from django.db import models
 
 
+class SchoolClass(models.Model):
+    """
+    Canonical class catalog for staff assignment (e.g. "5th", "6th", "10A").
+
+    Students still store `student_class` as a string for compatibility; RBAC maps via this label.
+    """
+
+    name = models.CharField(max_length=40, unique=True, db_index=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class Student(models.Model):
     name = models.CharField(max_length=100)
     email = models.EmailField()
@@ -124,6 +140,35 @@ class Event(models.Model):
         return f'{self.title} ({self.date})'
 
 
+class LoginOTP(models.Model):
+    """
+    Email login OTP. The `otp` field stores a SHA-256 hex digest of the 6-digit
+    code (never store plaintext OTP in the database).
+    """
+
+    email = models.EmailField(db_index=True)
+    otp = models.CharField(
+        max_length=64,
+        help_text='SHA-256 hex of the 6-digit code (peppered).',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        db_index=True,
+        help_text='After this time the code is invalid.',
+    )
+    is_used = models.BooleanField(default=False)
+    verify_attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['email', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f'OTP {self.email} @ {self.created_at}'
+
+
 class UserProfile(models.Model):
     """Staff role and scope (assigned class / subject). One-to-one with Django User."""
 
@@ -132,6 +177,13 @@ class UserProfile(models.Model):
         VICE_PRINCIPAL = 'vice_principal', 'Vice Principal'
         CLASS_TEACHER = 'class_teacher', 'Class Teacher'
         SUBJECT_TEACHER = 'subject_teacher', 'Subject Teacher'
+        STAFF = 'staff', 'Staff (Admin)'
+        UNASSIGNED = 'unassigned', 'Unassigned'
+
+    class ApprovalStatus(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        APPROVED = 'approved', 'Approved'
+        REJECTED = 'rejected', 'Rejected'
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -141,7 +193,13 @@ class UserProfile(models.Model):
     role = models.CharField(
         max_length=32,
         choices=Role.choices,
-        default=Role.CLASS_TEACHER,
+        default=Role.UNASSIGNED,
+    )
+    approval_status = models.CharField(
+        max_length=16,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.PENDING,
+        help_text='Self-registered users start pending until Principal/Vice Principal approves.',
     )
     assigned_class = models.CharField(
         max_length=40,
@@ -155,6 +213,24 @@ class UserProfile(models.Model):
         null=True,
         blank=True,
         related_name='subject_teachers',
+    )
+    assigned_subjects = models.ManyToManyField(
+        'marks.Subject',
+        blank=True,
+        related_name='subject_teachers_many',
+        help_text='Advanced: allow one subject teacher to handle multiple subjects.',
+    )
+    assigned_classes = models.ManyToManyField(
+        SchoolClass,
+        blank=True,
+        related_name='teachers',
+        help_text='Classes this staff user can access (for class/subject teachers).',
+    )
+    avatar_url = models.URLField(
+        max_length=512,
+        blank=True,
+        default='',
+        help_text='Profile image URL (e.g. from Google Sign-In).',
     )
 
     class Meta:
@@ -174,6 +250,10 @@ class ActivityLog(models.Model):
         ATTENDANCE_CREATE = 'attendance_create', 'Attendance create'
         ATTENDANCE_UPDATE = 'attendance_update', 'Attendance update'
         TEACHER_CREATE = 'teacher_create', 'Teacher create'
+        USER_CREATE = 'user_create', 'User create'
+        USER_APPROVE = 'user_approve', 'User approve'
+        USER_REJECT = 'user_reject', 'User reject'
+        USER_ROLE_UPDATE = 'user_role_update', 'User role update'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -191,3 +271,90 @@ class ActivityLog(models.Model):
 
     def __str__(self):
         return f'{self.action} by {self.user_id} @ {self.created_at}'
+
+
+# --- Schedule & substitution ---
+
+
+class ClassSchedule(models.Model):
+    """A single timetable slot for a teacher on a day."""
+
+    class Day(models.TextChoices):
+        MON = 'MON', 'Mon'
+        TUE = 'TUE', 'Tue'
+        WED = 'WED', 'Wed'
+        THU = 'THU', 'Thu'
+        FRI = 'FRI', 'Fri'
+        SAT = 'SAT', 'Sat'
+
+    class_name = models.CharField(max_length=40, db_index=True)
+    subject = models.ForeignKey(
+        'marks.Subject',
+        on_delete=models.PROTECT,
+        related_name='schedule_slots',
+    )
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='class_schedule_slots',
+    )
+    day = models.CharField(max_length=3, choices=Day.choices, db_index=True)
+    start_time = models.TimeField(db_index=True)
+    end_time = models.TimeField(db_index=True)
+
+    class Meta:
+        ordering = ['day', 'start_time', 'end_time', 'class_name', 'id']
+        indexes = [
+            models.Index(fields=['teacher', 'day', 'start_time']),
+            models.Index(fields=['day', 'start_time', 'end_time']),
+        ]
+
+    def __str__(self):
+        return f'{self.class_name} {self.subject} {self.day} {self.start_time}-{self.end_time}'
+
+
+class Substitution(models.Model):
+    """When an original teacher is absent for a slot; someone must be assigned."""
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        ASSIGNED = 'ASSIGNED', 'Assigned'
+
+    date = models.DateField(db_index=True)
+    class_name = models.CharField(max_length=40, db_index=True)
+    subject = models.ForeignKey(
+        'marks.Subject',
+        on_delete=models.PROTECT,
+        related_name='substitutions',
+    )
+    original_teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='substitutions_as_original',
+    )
+    substitute_teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='substitutions_as_substitute',
+    )
+    start_time = models.TimeField(db_index=True)
+    end_time = models.TimeField(db_index=True)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-date', 'start_time', 'class_name', 'id']
+        indexes = [
+            models.Index(fields=['date', 'status']),
+            models.Index(fields=['date', 'start_time']),
+        ]
+
+    def __str__(self):
+        return f'{self.date} {self.class_name} {self.subject} ({self.status})'

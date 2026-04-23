@@ -28,6 +28,9 @@ import { fetchSubjectPerformance } from '../services/subjectPerformanceService'
 export function DashboardPage() {
   const { user, logout } = useAuth()
   const nav = useMemo(() => rbacNavFlags(user?.rbac), [user?.rbac])
+  const isSubjectTeacher = user?.rbac?.role === 'subject_teacher'
+  const teacherSubjects = user?.rbac?.assigned_subject_names || []
+  const teacherClasses = user?.rbac?.assigned_classes || []
   const navigate = useNavigate()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -167,6 +170,16 @@ export function DashboardPage() {
             <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
               {user?.rbac?.rbac_label || 'School operations overview'}
             </p>
+            {isSubjectTeacher ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-sky-50 px-3 py-1 text-[11px] font-semibold text-sky-700 dark:bg-sky-950/40 dark:text-sky-200">
+                  {teacherSubjects.length ? `${teacherSubjects.join(', ')} Teacher` : 'Subject Teacher'}
+                </span>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                  Classes: {teacherClasses.length ? teacherClasses.join(', ') : '—'}
+                </span>
+              </div>
+            ) : null}
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <label className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
                 Class

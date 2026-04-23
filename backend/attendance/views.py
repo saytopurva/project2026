@@ -8,11 +8,11 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from api.activity_log import log_activity
+from api.permissions import IsAuthenticatedAndSmsApproved
 from api.date_utils import parse_calendar_date
 from api.models import ActivityLog, Student
 from api.rbac import (
@@ -28,7 +28,7 @@ from .serializers import AttendanceSerializer
 
 def _subject_teacher_block():
     return Response(
-        {'detail': 'Subject teachers cannot access attendance records.'},
+        {'detail': 'Subject teachers have read-only attendance access.'},
         status=status.HTTP_403_FORBIDDEN,
     )
 
@@ -63,9 +63,9 @@ def _filtered_queryset(request):
 
 @api_view(['GET', 'POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_list_create(request):
-    if subject_teacher_cannot_access_attendance(request.user):
+    if subject_teacher_cannot_access_attendance(request.user) and request.method != 'GET':
         return _subject_teacher_block()
 
     if request.method == 'GET':
@@ -125,9 +125,9 @@ def attendance_list_create(request):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_by_student(request, student_id):
-    if subject_teacher_cannot_access_attendance(request.user):
+    if subject_teacher_cannot_access_attendance(request.user) and request.method != 'GET':
         return _subject_teacher_block()
     student = get_object_or_404(Student, pk=student_id)
     if not user_can_access_student(request.user, student):
@@ -173,10 +173,10 @@ def attendance_by_student(request, student_id):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_monthly_summary(request, student_id):
     """GET /api/attendance/summary/<student_id>/?month=&year= — counts for one calendar month."""
-    if subject_teacher_cannot_access_attendance(request.user):
+    if subject_teacher_cannot_access_attendance(request.user) and request.method != 'GET':
         return _subject_teacher_block()
     student = get_object_or_404(Student, pk=student_id)
     if not user_can_access_student(request.user, student):
@@ -221,9 +221,9 @@ def attendance_monthly_summary(request, student_id):
 
 @api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_detail(request, pk):
-    if subject_teacher_cannot_access_attendance(request.user):
+    if subject_teacher_cannot_access_attendance(request.user) and request.method != 'GET':
         return _subject_teacher_block()
     try:
         rec = Attendance.objects.select_related('student', 'marked_by').get(pk=pk)
@@ -270,7 +270,7 @@ def attendance_detail(request, pk):
 
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_bulk(request):
     """
     Body: { "date": "YYYY-MM-DD", "entries": [ {"student": id, "status": "...", "reason": "..."}, ... ] }
@@ -336,7 +336,7 @@ def attendance_bulk(request):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_analytics(request):
     """
     GET /api/attendance/analytics/?class_name=&month=&year=
@@ -344,7 +344,7 @@ def attendance_analytics(request):
     Daily counts (present / absent / leave) for one class and calendar month,
     plus summary and lowest-attendance students in that month.
     """
-    if subject_teacher_cannot_access_attendance(request.user):
+    if subject_teacher_cannot_access_attendance(request.user) and request.method != 'GET':
         return _subject_teacher_block()
 
     class_name = (request.query_params.get('class_name') or '').strip()
@@ -468,9 +468,9 @@ def attendance_analytics(request):
 
 @api_view(['GET'])
 @authentication_classes([JWTAuthentication])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedAndSmsApproved])
 def attendance_export(request):
-    if subject_teacher_cannot_access_attendance(request.user):
+    if subject_teacher_cannot_access_attendance(request.user) and request.method != 'GET':
         return _subject_teacher_block()
     qs = _filtered_queryset(request)
     response = HttpResponse(content_type='text/csv')

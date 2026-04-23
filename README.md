@@ -22,23 +22,27 @@ React (Vite) + Django REST API. The browser talks to Django through the Vite dev
    npm run dev:stack
    ```
 
-   - App: [http://127.0.0.1:5173](http://127.0.0.1:5173)
-   - API health: [http://127.0.0.1:8000/api/health/](http://127.0.0.1:8000/api/health/) (or via proxy: [http://127.0.0.1:5173/api/health/](http://127.0.0.1:5173/api/health/))
+   - App: [http://127.0.0.1:3000](http://127.0.0.1:3000)
+   - API health: [http://127.0.0.1:8000/api/health/](http://127.0.0.1:8000/api/health/) (or via proxy: [http://127.0.0.1:3000/api/health/](http://127.0.0.1:3000/api/health/))
 
 If the dashboard or students list shows connection errors, confirm Django is up (`/api/health/` returns JSON `{"status":"ok"}`).
 
 ## Manual (two terminals)
 
 - Terminal A: `bash scripts/run-backend.sh` (Django on port 8000)
-- Terminal B: `npm run dev` (Vite on port 5173)
+- Terminal B: `npm run dev` (Vite on port 3000)
 
-## Login (demo)
+## Login
 
-1. Sign in with any email + password (client-side validation only).
-2. OTP step: use **`123456`** (see `src/utils/constants.js` → `MOCK_OTP`).
-3. The app registers your user in Django and stores a JWT for `/api/*` calls.
+- **Email OTP** and **Google Sign-In** (see `.env.example`). JWT is stored after verification.
 
-Google sign-in needs Firebase keys in `.env` (see `.env.example`).
+### Google Cloud Console (OAuth Client ID)
+
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/).
+2. **APIs & Services** → **OAuth consent screen** (configure if prompted).
+3. **Credentials** → **Create credentials** → **OAuth client ID** → type **Web application**.
+4. Under **Authorized JavaScript origins**, add: `http://localhost:3000` (must match the Vite dev URL).
+5. Copy the **Client ID** into `.env` as `VITE_GOOGLE_CLIENT_ID` and into `backend/.env` as `GOOGLE_OAUTH_CLIENT_ID` (same value).
 
 ## Production build (same app as dev — e.g. `/students`)
 
@@ -52,7 +56,7 @@ Output: `dist/`. Test it locally:
 npm run preview
 ```
 
-Open the URL Vite prints (often [http://127.0.0.1:4173](http://127.0.0.1:4173)). Client routes like `/students` work the same as on port 5173; configure your static host to **fallback all paths to `index.html`** (SPA).
+Open the URL Vite prints (often [http://127.0.0.1:4173](http://127.0.0.1:4173)). Client routes like `/students` work the same as on port 3000 in dev; configure your static host to **fallback all paths to `index.html`** (SPA).
 
 The dev server proxies `/api` to Django; **`preview` does not.** For a production build, either:
 
